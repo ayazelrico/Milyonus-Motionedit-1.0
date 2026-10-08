@@ -1,0 +1,22 @@
+{
+  "name": "hello-world",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "render": "milyonus render --url http://localhost:5173/?render=1 --out out/hello.mp4 --width 1280 --height 720 --fps 30 --frames 90"
+  },
+  "dependencies": {
+    "@milyonus/core": "*",
+    "@milyonus/player": "*",
+    "@milyonus/cli": "*",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  },
+  "devDependencies": {
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "vite": "^5.4.0"
+  }
+}

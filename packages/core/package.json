@@ -1,0 +1,15 @@
+{
+  "name": "@milyonus/core",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "tsc -p . && node --test test/core.test.js"
+  },
+  "peerDependencies": { "react": ">=18" },
+  "devDependencies": { "react": "^18.3.0" }
+}

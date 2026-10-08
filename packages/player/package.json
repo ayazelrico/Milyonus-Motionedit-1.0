@@ -1,0 +1,13 @@
+{
+  "name": "@milyonus/player",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": { "build": "tsc -p ." },
+  "peerDependencies": { "react": ">=18" },
+  "dependencies": { "@milyonus/core": "*" },
+  "devDependencies": { "react": "^18.3.0" }
+}

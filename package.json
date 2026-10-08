@@ -1,0 +1,20 @@
+{
+  "name": "milyonus",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Make videos programmatically with React. MIT licensed.",
+  "license": "MIT",
+  "workspaces": ["packages/*", "examples/*"],
+  "scripts": {
+    "build": "npm run build -w @milyonus/core && npm run build -w @milyonus/player && npm run build -w @milyonus/cli",
+    "dev": "npm run dev -w hello-world",
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p packages/player --noEmit && tsc -p packages/cli --noEmit",
+    "test": "npm test -w @milyonus/core",
+    "render": "npm run render -w hello-world"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/react": "^18.3.0",
+    "@types/node": "^20.0.0"
+  }
+}

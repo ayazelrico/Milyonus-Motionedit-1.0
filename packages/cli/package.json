@@ -1,0 +1,10 @@
+{
+  "name": "@milyonus/cli",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "milyonus": "dist/cli.js" },
+  "files": ["dist"],
+  "scripts": { "build": "tsc -p ." },
+  "dependencies": { "puppeteer": "^23.0.0" }
+}

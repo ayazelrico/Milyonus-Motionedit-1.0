@@ -1,3 +1,15 @@
+<div align="center">
+
+<img src="docs/assets/milyonus-wordmark-lg.png" alt="Milyonus" width="640" />
+
+**Frame-based motion graphics by Milyonus.**
+
+[Website](https://www.milyonus.com) · [Repository](https://github.com/ayazelrico/Milyonus-Motionedit-1.0)
+
+</div>
+
+---
+
 # Milyonus Motionedit 1.0
 
 **A video is a pure function of a frame. React is the language that function is written in.**

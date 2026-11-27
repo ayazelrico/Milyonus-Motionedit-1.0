@@ -39,6 +39,12 @@ export type RenderMediaOptions = {
   fps?: number;
   /** Override total frame count (defaults to discovered composition `durationInFrames` or `90`). */
   frames?: number;
+  /** Resolution scale multiplier (`0.5` for half-res draft, `2` for 2x Retina, default `1`). */
+  scale?: number;
+  /** Intermediate frame screenshot format (`"png"` default, or `"jpeg"` for faster opaque renders). */
+  imageFormat?: "png" | "jpeg";
+  /** JPEG quality (`1..100`, default `90`) when `imageFormat` is `"jpeg"`. */
+  jpegQuality?: number;
   /** Inclusive start frame for range/chunk rendering. Defaults to `0`. */
   fromFrame?: number;
   /** Exclusive end frame for range/chunk rendering. Defaults to `frames`. */
@@ -77,6 +83,7 @@ export type RenderStillOptions = {
   props?: string | Record<string, unknown>;
   width?: number;
   height?: number;
+  scale?: number;
   format?: "png" | "jpeg" | "webp";
   quality?: number;
   transparent?: boolean;
@@ -131,20 +138,14 @@ const prepareRenderPage = async (
   await page.goto(url, { waitUntil: "networkidle0" });
   await page.waitForFunction("window.milyonusReady === true", { timeout: 30000 });
 
-  let discovered: CompositionSummary | undefined;
   if (composition) {
-    discovered = await page.evaluate(async (id: string) => {
+    await page.evaluate(async (id: string) => {
       const fn = (window as any).milyonusSelectComposition;
       if (typeof fn !== "function") {
         throw new Error("Render page does not support composition selection (upgrade @milyonus/player).");
       }
-      return await fn(id);
+      await fn(id);
     }, composition);
-  } else {
-    discovered = await page.evaluate(() => {
-      const fn = (window as any).milyonusGetConfig;
-      return typeof fn === "function" ? fn() : undefined;
-    });
   }
 
   if (transparent) {
@@ -162,6 +163,12 @@ const prepareRenderPage = async (
       }
     }, inputProps);
   }
+
+  // Read config AFTER props injection so dynamic `calculateMetadata` values take effect.
+  const discovered = await page.evaluate(() => {
+    const fn = (window as any).milyonusGetConfig;
+    return typeof fn === "function" ? (fn() as CompositionSummary) : undefined;
+  });
 
   return (
     discovered ?? {
@@ -234,8 +241,12 @@ export const renderStill = async (options: RenderStillOptions = {}): Promise<{
     const discovered = await prepareRenderPage(page, url, options.composition, inputProps, transparent);
     const width = options.width ?? discovered.width;
     const height = options.height ?? discovered.height;
+    const scale = options.scale ?? 1;
+    if (!Number.isFinite(scale) || scale <= 0) {
+      throw new Error(`Invalid scale "${scale}": expected a positive number.`);
+    }
 
-    await page.setViewport({ width, height, deviceScaleFactor: 1 });
+    await page.setViewport({ width, height, deviceScaleFactor: scale });
     await page.evaluate((n: number) => (window as any).milyonusSetFrame(n), frame);
     const stage = await page.$("#milyonus-stage");
     if (!stage) throw new Error("#milyonus-stage not found on the render page.");
@@ -247,7 +258,12 @@ export const renderStill = async (options: RenderStillOptions = {}): Promise<{
       ...(format !== "png" && options.quality !== undefined ? { quality: options.quality } : {}),
     });
 
-    return { out, width, height, frame };
+    return {
+      out,
+      width: Math.round(width * scale),
+      height: Math.round(height * scale),
+      frame,
+    };
   } finally {
     await browser.close();
   }
@@ -279,6 +295,8 @@ const buildVideoCodecArgs = (codec: VideoCodec, transparent: boolean, crf?: numb
   return [
     "-c:v",
     "libx264",
+    "-vf",
+    "pad=ceil(iw/2)*2:ceil(ih/2)*2",
     ...(crf !== undefined ? ["-crf", String(crf)] : []),
     "-pix_fmt",
     "yuv420p",
@@ -302,6 +320,14 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
   const out = resolve(options.out ?? "out/video.mp4");
   const codec = resolveVideoCodec(out, options.codec);
   const transparent = Boolean(options.transparent);
+  const scale = options.scale ?? 1;
+  if (!Number.isFinite(scale) || scale <= 0) {
+    throw new Error(`Invalid scale "${scale}": expected a positive number.`);
+  }
+  const imageFormat: "png" | "jpeg" = transparent ? "png" : (options.imageFormat ?? "png");
+  const frameExt = imageFormat === "jpeg" ? "jpg" : "png";
+  const jpegQuality = options.jpegQuality ?? 90;
+
   if (transparent && codec === "h264") {
     throw new Error("H.264 MP4 does not support alpha transparency. Use --codec vp9 (.webm), prores (.mov), or gif (.gif).");
   }
@@ -371,7 +397,7 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
       }
 
       for (const p of pages) {
-        await p.setViewport({ width, height, deviceScaleFactor: 1 });
+        await p.setViewport({ width, height, deviceScaleFactor: scale });
       }
 
       let completed = 0;
@@ -389,8 +415,16 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
           for (let f = chunkStart; f < chunkEnd; f++) {
             await page.evaluate((n: number) => (window as any).milyonusSetFrame(n), f);
             const outputIndex = f - fromFrame;
-            const file = join(tempDir, `frame-${String(outputIndex).padStart(6, "0")}.png`) as `${string}.png`;
-            await stage.screenshot({ path: file, omitBackground: transparent });
+            const file = join(
+              tempDir,
+              `frame-${String(outputIndex).padStart(6, "0")}.${frameExt}`
+            ) as `${string}.png`;
+            await stage.screenshot({
+              path: file,
+              type: imageFormat,
+              omitBackground: transparent,
+              ...(imageFormat === "jpeg" ? { quality: jpegQuality } : {}),
+            });
             completed++;
             options.onProgress?.(completed, renderedFrames);
             if (!options.quiet && (completed % 10 === 0 || completed === renderedFrames)) {
@@ -425,26 +459,19 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
       await mkdir(seqDest, { recursive: true });
       await cp(tempDir, seqDest, {
         recursive: true,
-        filter: (srcPath) => srcPath === tempDir || srcPath.endsWith(".png"),
+        filter: (srcPath) => srcPath === tempDir || srcPath.endsWith(`.${frameExt}`),
       });
     }
 
     let audioTracksMuxed = 0;
+    const framePattern = join(tempDir, `frame-%06d.${frameExt}`);
+
     if (codec === "gif") {
       const reserveTransparent = transparent ? "1" : "0";
       const gifFilter = `split[s0][s1];[s0]palettegen=reserve_transparent=${reserveTransparent}[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5`;
       await runBinary(
         "ffmpeg",
-        [
-          "-y",
-          "-framerate",
-          String(fps),
-          "-i",
-          join(tempDir, "frame-%06d.png"),
-          "-vf",
-          gifFilter,
-          out,
-        ],
+        ["-y", "-framerate", String(fps), "-i", framePattern, "-vf", gifFilter, out],
         options.quiet
       );
     } else {
@@ -457,6 +484,14 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
         tempDir,
       });
 
+      const videoCodecArgs = buildVideoCodecArgs(codec, transparent, options.crf);
+      // Note: `-vf` cannot be combined with `-filter_complex` on the same stream without integrating into the graph;
+      // when `-filter_complex` is active, omit standalone `-vf` and ensure even dimensions via scale.
+      const cleanedVideoArgs =
+        audioPlan.filterAndMapArgs.length > 0
+          ? videoCodecArgs.filter((arg, i, arr) => arg !== "-vf" && arr[i - 1] !== "-vf")
+          : videoCodecArgs;
+
       const audioCodecOverride =
         codec === "vp9" && audioPlan.filterAndMapArgs.length > 0
           ? audioPlan.filterAndMapArgs.map((arg) => (arg === "aac" ? "libopus" : arg))
@@ -467,9 +502,9 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
         "-framerate",
         String(fps),
         "-i",
-        join(tempDir, "frame-%06d.png"),
+        framePattern,
         ...audioPlan.inputArgs,
-        ...buildVideoCodecArgs(codec, transparent, options.crf),
+        ...cleanedVideoArgs,
         ...audioCodecOverride,
         out,
       ];
@@ -488,8 +523,8 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
       out,
       codec,
       compositionId,
-      width,
-      height,
+      width: Math.round(width * scale),
+      height: Math.round(height * scale),
       fps,
       fromFrame,
       toFrame,

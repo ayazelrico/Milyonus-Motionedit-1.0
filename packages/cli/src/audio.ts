@@ -169,6 +169,7 @@ export const buildAudioMuxArgs = async (
     if (delayMs > 0) {
       chain.push(`adelay=${delayMs}:all=1`);
     }
+    chain.push("aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo");
     chain.push(`apad=whole_dur=${videoDurationSec.toFixed(6)}`);
     chain.push(`atrim=0:${videoDurationSec.toFixed(6)}`);
     chain.push("asetpts=PTS-STARTPTS");

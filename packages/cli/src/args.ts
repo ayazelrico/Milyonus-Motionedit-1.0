@@ -105,6 +105,24 @@ export const getNonNegativeIntFlag = (
   return n;
 };
 
+/** Reads and validates a positive finite floating-point or integer flag (`> 0`). */
+export const getPositiveNumberFlag = (
+  flags: Record<string, string | boolean>,
+  name: string,
+  fallback?: number
+): number | undefined => {
+  const raw = flags[name];
+  if (raw === undefined) return fallback;
+  if (typeof raw === "boolean" || raw.trim() === "") {
+    throw new Error(`Flag --${name} requires a positive number.`);
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`Invalid --${name}="${raw}": expected a positive number.`);
+  }
+  return n;
+};
+
 /**
  * Loads `inputProps` from either an inline JSON object string (`'{"title":"Hi"}'`)
  * or a path to a `.json` file (`data.json`).

@@ -78,12 +78,12 @@ A composition is a function. Its only clock is an integer. Width, height, frame 
 
 | Surface | Package | What it provides |
 |---|---|---|
-| Core runtime | `@milyonus/core` | `FrameContext`, `AbsoluteFill`, `Sequence`, `Series`, `Loop`, `Freeze`, `interpolate`, `Easings.bezier`, `interpolateColors`, `spring`, `random`, `Transition`, `Captions`, `Audio`, `Img`, `Video`, `delayRender`, `defineComposition` (zero runtime dependencies) |
+| Core runtime | `@milyonus/core` | `FrameContext`, `AbsoluteFill`, `Sequence`, `Series`, `Loop`, `Freeze`, `interpolate`, `Easings.bezier`, `interpolateColors`, `spring`, `random`, `Transition`, `Captions`, `Audio`, `AudioWaveform`, `StrokePath`, `Img`, `Video`, `delayRender`, `propSchema`, `calculateMetadata`, `defineComposition` (zero runtime dependencies) |
 | Embeddable preview | `@milyonus/player` | `<Player>` with play/pause, frame-stepping, playback speed (`0.25x..2x`), mute toggle, timecode, and scrubber |
-| Interactive workspace | `@milyonus/player` | `<Studio>` with composition switcher, zoom & alpha checkerboard grid, live prop controls + JSON editor, CLI command generator, and sequence/audio timeline ruler |
-| Capture driver | `@milyonus/player` | `<FrameRenderer>` exposing `window.milyonusSetFrame`, `delayRender` asset gating, alpha transparency, prop injection, composition discovery, and audio/sequence inspection |
-| Renderer & Worker CLI | `@milyonus/cli` | `milyonus init`, `render` (`h264`, alpha `vp9` WebM, `prores` MOV, `gif`, parallel browsers, audio muxing, `--serve`, `--props`), `still`, `compositions`, `stitch`, and `worker` |
-| Examples | `examples/*` | `hello-world` (intro, launch card, alpha sticker) & `data-explainer` (1080p KPI bar-chart film) |
+| Interactive workspace | `@milyonus/player` | `<Studio>` with composition switcher, zoom & alpha grid, schema-driven controls (color pickers, sliders, enums) + JSON editor, In/Out loop markers, CLI command generator, and timeline ruler |
+| Capture driver | `@milyonus/player` | `<FrameRenderer>` exposing `window.milyonusSetFrame`, `calculateMetadata` resolution, `propSchema` validation, `delayRender` asset gating, alpha transparency, and audio/sequence inspection |
+| Renderer & Worker CLI | `@milyonus/cli` | `milyonus init`, `render` (`h264`, alpha `vp9` WebM, `prores` MOV, `gif`, `--scale`, `--image-format`, parallel browsers, 48kHz stereo audio muxing, `--serve`, `--props`), `still`, `compositions`, `stitch`, and `worker` |
+| Examples | `examples/*` | `hello-world` (intro, dynamic aspect launch card, alpha sticker) & `data-explainer` (1080p KPI bar-chart film) |
 
 ---
 

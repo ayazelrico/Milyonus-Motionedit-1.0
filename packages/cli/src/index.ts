@@ -3,6 +3,7 @@ export {
   getStringFlag,
   getPositiveIntFlag,
   getNonNegativeIntFlag,
+  getPositiveNumberFlag,
   loadInputProps,
 } from "./args.js";
 export type { ParsedArgs } from "./args.js";

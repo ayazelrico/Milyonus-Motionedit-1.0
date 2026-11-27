@@ -2,6 +2,7 @@
 import {
   getNonNegativeIntFlag,
   getPositiveIntFlag,
+  getPositiveNumberFlag,
   getStringFlag,
   parseCliArgs,
 } from "./args.js";
@@ -39,8 +40,11 @@ Render options:
   --out <file>            Output path (.mp4, .webm, .mov, .gif; default: out/video.mp4)
   --codec <codec>         Codec: h264 | vp9 | prores | gif (inferred from --out if omitted)
   --crf <0..51>           Constant Rate Factor for h264 / vp9
+  --scale <factor>        Resolution scale multiplier (e.g. 0.5 draft, 2 retina; default: 1)
+  --image-format <fmt>    Intermediate screenshot format: png | jpeg (default: png)
+  --jpeg-quality <1..100> JPEG intermediate quality (default: 90)
   --transparent           Preserve alpha channel (vp9 .webm, prores .mov, or .gif)
-  --sequence-dir <dir>    Also save numbered PNG frames to <dir>
+  --sequence-dir <dir>    Also save numbered frame images to <dir>
   --width <px>            Override stage width (defaults to composition config)
   --height <px>           Override stage height (defaults to composition config)
   --fps <n>               Override frame rate (defaults to composition config)
@@ -55,6 +59,7 @@ Still options:
   --composition <id>      Select composition ID
   --props <json|file>     Inline JSON object or path to a .json props file
   --frame <n>             Frame index to capture (default: 0)
+  --scale <factor>        Resolution scale multiplier (default: 1)
   --out <file.png>        Output image path (.png, .jpg, .webp; default: out/still.png)
   --transparent           Omit opaque background on PNG/WebP stills
   --width <px>            Override width
@@ -99,6 +104,11 @@ async function main(): Promise<void> {
   if (command === "render") {
     const out = getStringFlag(flags, "out", "out/video.mp4");
     const explicitCodec = getStringFlag(flags, "codec");
+    const rawImgFmt = getStringFlag(flags, "image-format");
+    if (rawImgFmt && rawImgFmt !== "png" && rawImgFmt !== "jpeg") {
+      throw new Error(`Invalid --image-format="${rawImgFmt}": expected "png" or "jpeg".`);
+    }
+
     await renderMedia({
       url: getStringFlag(flags, "url"),
       serve: getStringFlag(flags, "serve"),
@@ -107,6 +117,9 @@ async function main(): Promise<void> {
       out,
       codec: explicitCodec ? resolveVideoCodec(out, explicitCodec) : undefined,
       crf: getNonNegativeIntFlag(flags, "crf"),
+      scale: getPositiveNumberFlag(flags, "scale", 1),
+      imageFormat: rawImgFmt as "png" | "jpeg" | undefined,
+      jpegQuality: getPositiveIntFlag(flags, "jpeg-quality"),
       transparent: Boolean(flags.transparent),
       sequenceDir: getStringFlag(flags, "sequence-dir"),
       width: getPositiveIntFlag(flags, "width"),
@@ -128,6 +141,7 @@ async function main(): Promise<void> {
       composition: getStringFlag(flags, "composition"),
       props: getStringFlag(flags, "props"),
       frame: getNonNegativeIntFlag(flags, "frame", 0),
+      scale: getPositiveNumberFlag(flags, "scale", 1),
       out: getStringFlag(flags, "out", "out/still.png"),
       transparent: Boolean(flags.transparent),
       width: getPositiveIntFlag(flags, "width"),

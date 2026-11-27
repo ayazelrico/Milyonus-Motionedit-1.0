@@ -28,7 +28,7 @@ export type { LoopProps } from "./Loop.js";
 export { Freeze } from "./Freeze.js";
 export type { FreezeProps } from "./Freeze.js";
 export { interpolate, bezier, Easings } from "./interpolate.js";
-export type { Easing, InterpolateOptions } from "./interpolate.js";
+export type { Easing, ExtrapolateType, InterpolateOptions } from "./interpolate.js";
 export { interpolateColors, parseColor } from "./colors.js";
 export type { RgbaColor } from "./colors.js";
 export { spring, defaultSpring } from "./spring.js";
@@ -55,6 +55,14 @@ export {
 export type { CaptionCue, CaptionsProps } from "./Captions.js";
 export { Audio } from "./Audio.js";
 export type { AudioProps } from "./Audio.js";
+export {
+  parseWavAudioData,
+  visualizeAudio,
+  AudioWaveform,
+} from "./audioData.js";
+export type { AudioWaveformData, AudioWaveformProps } from "./audioData.js";
+export { evolvePath, StrokePath } from "./svg.js";
+export type { StrokePathProps } from "./svg.js";
 export { Img, Video } from "./Media.js";
 export type { ImgProps, VideoProps } from "./Media.js";
 export {
@@ -65,5 +73,21 @@ export {
   getPendingDelayRenders,
   resetDelayRenders,
 } from "./delayRender.js";
-export { defineComposition } from "./Composition.js";
-export type { CompositionDefinition, CompositionSummary } from "./Composition.js";
+export { propSchema, validateProps } from "./schema.js";
+export type {
+  PropFieldSchema,
+  StringFieldSchema,
+  NumberFieldSchema,
+  BooleanFieldSchema,
+  ColorFieldSchema,
+  EnumFieldSchema,
+  ArrayFieldSchema,
+  ObjectPropSchema,
+} from "./schema.js";
+export { defineComposition, resolveCompositionMetadata } from "./Composition.js";
+export type {
+  CompositionDefinition,
+  CompositionSummary,
+  CalculatedMetadata,
+  CalculateMetadataFunction,
+} from "./Composition.js";

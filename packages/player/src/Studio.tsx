@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type {
-  CompositionDefinition,
-  InspectorAPI,
-  ResolvedAudioTrack,
-  TimelineSequenceEntry,
-  VideoConfig,
+import {
+  resolveCompositionMetadata,
+  validateProps,
+  type CompositionDefinition,
+  type InspectorAPI,
+  type PropFieldSchema,
+  type ResolvedAudioTrack,
+  type TimelineSequenceEntry,
+  type VideoConfig,
 } from "@milyonus/core";
 import { Stage } from "./Stage.js";
 
@@ -22,6 +25,8 @@ const PALETTE = ["#35C6F4", "#1E4FD8", "#FFB703", "#10B981", "#A855F7", "#F43F5E
 const CHECKERBOARD_BG =
   "repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 24px 24px";
 
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
 const formatTimecode = (frame: number, fps: number): string => {
   const totalSeconds = Math.floor(frame / Math.max(1, fps));
   const remFrames = frame % Math.max(1, fps);
@@ -32,7 +37,8 @@ const formatTimecode = (frame: number, fps: number): string => {
 
 /**
  * Interactive Motionedit Studio shell with composition switcher, zoom/transparency controls,
- * live prop editor (form + JSON), CLI command generator, and sequence/audio timeline ruler.
+ * schema-aware prop editor (color pickers, sliders, enums, JSON), In/Out loop markers,
+ * dynamic `calculateMetadata` evaluation, CLI command generator, and sequence/audio timeline ruler.
  */
 export const Studio: React.FC<StudioProps> = ({
   compositions,
@@ -58,6 +64,8 @@ export const Studio: React.FC<StudioProps> = ({
   const [speed, setSpeed] = useState(1);
   const [zoomMode, setZoomMode] = useState<"fit" | "0.5" | "0.75" | "1">("fit");
   const [transparentStage, setTransparentStage] = useState(false);
+  const [inFrame, setInFrame] = useState<number | null>(null);
+  const [outFrame, setOutFrame] = useState<number | null>(null);
 
   const [propsMap, setPropsMap] = useState<Record<string, Record<string, unknown>>>(() => {
     const init: Record<string, Record<string, unknown>> = {};
@@ -66,6 +74,16 @@ export const Studio: React.FC<StudioProps> = ({
     }
     return init;
   });
+  const [resolvedConfig, setResolvedConfig] = useState<VideoConfig>(() => ({
+    width: activeComp.width,
+    height: activeComp.height,
+    fps: activeComp.fps,
+    durationInFrames: activeComp.durationInFrames,
+  }));
+  const [resolvedProps, setResolvedProps] = useState<Record<string, unknown>>(
+    () => propsMap[activeComp.id] ?? activeComp.defaultProps ?? {}
+  );
+
   const [editorTab, setEditorTab] = useState<"form" | "json">("form");
   const [jsonDraft, setJsonDraft] = useState<string>(() =>
     JSON.stringify(activeComp.defaultProps ?? {}, null, 2)
@@ -83,12 +101,21 @@ export const Studio: React.FC<StudioProps> = ({
   const [, bumpTimelineVersion] = useState(0);
 
   const currentProps = propsMap[activeComp.id] ?? activeComp.defaultProps ?? {};
-  const maxFrame = Math.max(0, activeComp.durationInFrames - 1);
+  const maxFrame = Math.max(0, resolvedConfig.durationInFrames - 1);
+  const loopStart = inFrame !== null ? Math.min(inFrame, maxFrame) : 0;
+  const loopEnd = outFrame !== null ? Math.min(Math.max(loopStart, outFrame), maxFrame) : maxFrame;
+
+  const schemaValidation = useMemo(
+    () => (activeComp.schema ? validateProps(activeComp.schema, currentProps) : { valid: true, errors: [] }),
+    [activeComp.schema, currentProps]
+  );
 
   useEffect(() => {
     seqRegistryRef.current.clear();
     audioRegistryRef.current.clear();
     setFrame(0);
+    setInFrame(null);
+    setOutFrame(null);
     setPlaying(false);
     const nextProps = propsMap[activeComp.id] ?? activeComp.defaultProps ?? {};
     setJsonDraft(JSON.stringify(nextProps, null, 2));
@@ -96,32 +123,49 @@ export const Studio: React.FC<StudioProps> = ({
   }, [activeComp.id]);
 
   useEffect(() => {
+    let cancelled = false;
+    resolveCompositionMetadata(activeComp, currentProps)
+      .then(({ config: nextCfg, props: nextResolved }) => {
+        if (cancelled) return;
+        setResolvedConfig(nextCfg);
+        setResolvedProps(nextResolved);
+        setFrame((f) => Math.min(f, Math.max(0, nextCfg.durationInFrames - 1)));
+      })
+      .catch(() => {
+        // Keep last valid metadata if user is mid-keystroke.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeComp, currentProps]);
+
+  useEffect(() => {
     if (typeof ResizeObserver === "undefined" || !stageHostRef.current) return;
     const obs = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const w = Math.max(240, Math.floor(entry.contentRect.width - 48));
         const h = Math.max(180, Math.floor(entry.contentRect.height - 48));
-        const fitW = Math.min(w, Math.floor((h * activeComp.width) / activeComp.height));
+        const fitW = Math.min(w, Math.floor((h * resolvedConfig.width) / resolvedConfig.height));
         setFitWidth(Math.max(240, fitW));
       }
     });
     obs.observe(stageHostRef.current);
     return () => obs.disconnect();
-  }, [activeComp.width, activeComp.height]);
+  }, [resolvedConfig.width, resolvedConfig.height]);
 
   useEffect(() => {
     if (!playing) return;
-    const effectiveFps = activeComp.fps * speed;
+    const effectiveFps = resolvedConfig.fps * speed;
     let origin = performance.now() - (frameRef.current / effectiveFps) * 1000;
     let raf = 0;
     const tick = (now: number) => {
       let f = Math.floor(((now - origin) / 1000) * effectiveFps);
-      if (f >= activeComp.durationInFrames) {
+      if (f > loopEnd) {
         if (loop) {
-          origin = now;
-          f = 0;
+          origin = now - (loopStart / effectiveFps) * 1000;
+          f = loopStart;
         } else {
-          setFrame(maxFrame);
+          setFrame(loopEnd);
           setPlaying(false);
           return;
         }
@@ -131,7 +175,7 @@ export const Studio: React.FC<StudioProps> = ({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, loop, activeComp.fps, activeComp.durationInFrames, maxFrame, speed]);
+  }, [playing, loop, resolvedConfig.fps, loopStart, loopEnd, speed]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -152,16 +196,22 @@ export const Studio: React.FC<StudioProps> = ({
       } else if (e.code === "Home") {
         e.preventDefault();
         setPlaying(false);
-        setFrame(0);
+        setFrame(loopStart);
       } else if (e.code === "End") {
         e.preventDefault();
         setPlaying(false);
-        setFrame(maxFrame);
+        setFrame(loopEnd);
+      } else if (e.code === "KeyI") {
+        e.preventDefault();
+        setInFrame(frameRef.current);
+      } else if (e.code === "KeyO") {
+        e.preventDefault();
+        setOutFrame(frameRef.current);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [maxFrame]);
+  }, [maxFrame, loopStart, loopEnd]);
 
   const inspector: InspectorAPI = useMemo(
     () => ({
@@ -201,20 +251,10 @@ export const Studio: React.FC<StudioProps> = ({
     setJsonError(null);
   };
 
-  const config: VideoConfig = useMemo(
-    () => ({
-      width: activeComp.width,
-      height: activeComp.height,
-      fps: activeComp.fps,
-      durationInFrames: activeComp.durationInFrames,
-    }),
-    [activeComp.width, activeComp.height, activeComp.fps, activeComp.durationInFrames]
-  );
-
   const playback = useMemo(() => ({ playing, muted, renderMode: false }), [playing, muted]);
 
   const effectiveScale =
-    zoomMode === "fit" ? fitWidth / activeComp.width : Number(zoomMode);
+    zoomMode === "fit" ? fitWidth / resolvedConfig.width : Number(zoomMode);
 
   const sequences = Array.from(seqRegistryRef.current.values()).sort(
     (a, b) => a.from - b.from || a.depth - b.depth
@@ -243,6 +283,8 @@ export const Studio: React.FC<StudioProps> = ({
       `--url "${origin}?render=1"`,
       `--composition "${activeComp.id}"`,
       transparentStage ? "--codec vp9 --transparent" : "",
+      inFrame !== null ? `--from-frame ${loopStart}` : "",
+      outFrame !== null ? `--to-frame ${loopEnd + 1}` : "",
       hasProps ? `--props '${serialized}'` : "",
       `--out "out/${activeComp.id}.${ext}"`,
     ]
@@ -259,6 +301,143 @@ export const Studio: React.FC<StudioProps> = ({
       });
     }
   };
+
+  const renderFieldControl = (key: string, val: unknown, fieldSchema?: PropFieldSchema) => {
+    const label = fieldSchema?.label ?? key;
+
+    if (fieldSchema?.kind === "enum") {
+      return (
+        <label key={key} style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+          <span style={{ color: "#cbd5e1", fontWeight: 500 }}>{label}</span>
+          <select
+            value={String(val ?? fieldSchema.options[0] ?? "")}
+            onChange={(e) => updatePropValue(key, e.target.value)}
+            style={fieldStyle}
+          >
+            {fieldSchema.options.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </select>
+        </label>
+      );
+    }
+
+    if (fieldSchema?.kind === "color" || (typeof val === "string" && HEX_COLOR_RE.test(val))) {
+      const hex = typeof val === "string" && HEX_COLOR_RE.test(val) ? val : "#35c6f4";
+      return (
+        <label key={key} style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+          <span style={{ color: "#cbd5e1", fontWeight: 500 }}>{label}</span>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="color"
+              value={hex}
+              onChange={(e) => updatePropValue(key, e.target.value)}
+              style={{ width: 32, height: 28, padding: 0, border: "none", background: "transparent", cursor: "pointer" }}
+            />
+            <input
+              type="text"
+              value={String(val ?? "")}
+              onChange={(e) => updatePropValue(key, e.target.value)}
+              style={{ ...fieldStyle, flex: 1 }}
+            />
+          </div>
+        </label>
+      );
+    }
+
+    if (fieldSchema?.kind === "boolean" || typeof val === "boolean") {
+      return (
+        <label key={key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 12 }}>
+          <span style={{ color: "#cbd5e1", fontWeight: 500 }}>{label}</span>
+          <input
+            type="checkbox"
+            checked={Boolean(val)}
+            onChange={(e) => updatePropValue(key, e.target.checked)}
+          />
+        </label>
+      );
+    }
+
+    if (fieldSchema?.kind === "number" || typeof val === "number") {
+      const numVal = typeof val === "number" ? val : 0;
+      const hasBounds =
+        fieldSchema?.kind === "number" &&
+        fieldSchema.min !== undefined &&
+        fieldSchema.max !== undefined;
+      return (
+        <label key={key} style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+          <span style={{ color: "#cbd5e1", fontWeight: 500 }}>{label}</span>
+          {hasBounds && fieldSchema.kind === "number" ? (
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="range"
+                min={fieldSchema.min}
+                max={fieldSchema.max}
+                step={fieldSchema.step ?? 1}
+                value={numVal}
+                onChange={(e) => updatePropValue(key, Number(e.target.value))}
+                style={{ flex: 1, accentColor: "#35C6F4" }}
+              />
+              <input
+                type="number"
+                min={fieldSchema.min}
+                max={fieldSchema.max}
+                step={fieldSchema.step ?? 1}
+                value={numVal}
+                onChange={(e) => updatePropValue(key, Number(e.target.value))}
+                style={{ ...fieldStyle, width: 64 }}
+              />
+            </div>
+          ) : (
+            <input
+              type="number"
+              step={fieldSchema?.kind === "number" ? fieldSchema.step : undefined}
+              value={numVal}
+              onChange={(e) => updatePropValue(key, Number(e.target.value))}
+              style={fieldStyle}
+            />
+          )}
+        </label>
+      );
+    }
+
+    if (typeof val === "string" || fieldSchema?.kind === "string") {
+      return (
+        <label key={key} style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+          <span style={{ color: "#cbd5e1", fontWeight: 500 }}>{label}</span>
+          <input
+            type="text"
+            value={String(val ?? "")}
+            onChange={(e) => updatePropValue(key, e.target.value)}
+            style={fieldStyle}
+          />
+        </label>
+      );
+    }
+
+    return (
+      <label key={key} style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+        <span style={{ color: "#cbd5e1", fontWeight: 500 }}>{label}</span>
+        <input
+          type="text"
+          value={JSON.stringify(val)}
+          readOnly
+          title="Edit complex objects/arrays in the JSON tab"
+          style={{ ...fieldStyle, opacity: 0.7 }}
+        />
+      </label>
+    );
+  };
+
+  const fieldKeys = useMemo(() => {
+    const keys = new Set<string>(Object.keys(currentProps));
+    if (activeComp.schema) {
+      for (const k of Object.keys(activeComp.schema.shape)) keys.add(k);
+    }
+    return Array.from(keys);
+  }, [currentProps, activeComp.schema]);
 
   return (
     <div
@@ -291,8 +470,8 @@ export const Studio: React.FC<StudioProps> = ({
             {title}
           </span>
           <span style={{ fontSize: 12, color: "#94a3b8" }}>
-            {activeComp.width}×{activeComp.height} · {activeComp.fps} fps · {activeComp.durationInFrames} frames (
-            {(activeComp.durationInFrames / activeComp.fps).toFixed(2)}s)
+            {resolvedConfig.width}×{resolvedConfig.height} · {resolvedConfig.fps} fps · {resolvedConfig.durationInFrames} frames (
+            {(resolvedConfig.durationInFrames / resolvedConfig.fps).toFixed(2)}s)
           </span>
         </div>
 
@@ -406,10 +585,10 @@ export const Studio: React.FC<StudioProps> = ({
               }}
             >
               <Stage
-                config={config}
+                config={resolvedConfig}
                 frame={frame}
                 component={activeComp.component}
-                props={currentProps}
+                props={resolvedProps}
                 scale={effectiveScale}
                 playback={playback}
                 inspector={inspector}
@@ -427,7 +606,7 @@ export const Studio: React.FC<StudioProps> = ({
               background: "#0b132b",
               display: "flex",
               alignItems: "center",
-              gap: 8,
+              gap: 6,
               flexShrink: 0,
             }}
           >
@@ -435,7 +614,7 @@ export const Studio: React.FC<StudioProps> = ({
               type="button"
               onClick={() => {
                 setPlaying(false);
-                setFrame(0);
+                setFrame(loopStart);
               }}
               style={transportBtnStyle}
             >
@@ -454,10 +633,10 @@ export const Studio: React.FC<StudioProps> = ({
             <button
               type="button"
               onClick={() => {
-                if (!playing && frame >= maxFrame) setFrame(0);
+                if (!playing && frame >= loopEnd) setFrame(loopStart);
                 setPlaying((p) => !p);
               }}
-              style={{ ...transportBtnStyle, background: "#1e4fd8", minWidth: 64, fontWeight: 600 }}
+              style={{ ...transportBtnStyle, background: "#1e4fd8", minWidth: 60, fontWeight: 600 }}
             >
               {playing ? "Pause" : "Play"}
             </button>
@@ -475,12 +654,41 @@ export const Studio: React.FC<StudioProps> = ({
               type="button"
               onClick={() => {
                 setPlaying(false);
-                setFrame(maxFrame);
+                setFrame(loopEnd);
               }}
               style={transportBtnStyle}
             >
               &gt;|
             </button>
+            <button
+              type="button"
+              title="Set In frame (I)"
+              onClick={() => setInFrame(frame)}
+              style={{ ...transportBtnStyle, borderColor: inFrame !== null ? "#35C6F4" : "#334155" }}
+            >
+              In{inFrame !== null ? `:${inFrame}` : ""}
+            </button>
+            <button
+              type="button"
+              title="Set Out frame (O)"
+              onClick={() => setOutFrame(frame)}
+              style={{ ...transportBtnStyle, borderColor: outFrame !== null ? "#35C6F4" : "#334155" }}
+            >
+              Out{outFrame !== null ? `:${outFrame}` : ""}
+            </button>
+            {inFrame !== null || outFrame !== null ? (
+              <button
+                type="button"
+                title="Clear In/Out range"
+                onClick={() => {
+                  setInFrame(null);
+                  setOutFrame(null);
+                }}
+                style={transportBtnStyle}
+              >
+                ×
+              </button>
+            ) : null}
             <input
               type="range"
               min={0}
@@ -516,11 +724,11 @@ export const Studio: React.FC<StudioProps> = ({
                 fontVariantNumeric: "tabular-nums",
                 fontSize: 12,
                 color: "#35C6F4",
-                minWidth: 132,
+                minWidth: 128,
                 textAlign: "right",
               }}
             >
-              {formatTimecode(frame, activeComp.fps)} · {frame}/{maxFrame}
+              {formatTimecode(frame, resolvedConfig.fps)} · {frame}/{maxFrame}
             </span>
           </div>
         </main>
@@ -528,7 +736,7 @@ export const Studio: React.FC<StudioProps> = ({
         {/* Right Sidebar: Prop Editor */}
         <aside
           style={{
-            width: 280,
+            width: 288,
             borderLeft: "1px solid #1e293b",
             background: "#091024",
             padding: 12,
@@ -569,46 +777,14 @@ export const Studio: React.FC<StudioProps> = ({
 
           {editorTab === "form" ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {Object.keys(currentProps).length === 0 ? (
+              {fieldKeys.length === 0 ? (
                 <div style={{ fontSize: 12, color: "#64748b" }}>
                   No default props declared. Switch to the JSON tab to add custom props.
                 </div>
               ) : (
-                Object.entries(currentProps).map(([key, val]) => (
-                  <label key={key} style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
-                    <span style={{ color: "#cbd5e1", fontWeight: 500 }}>{key}</span>
-                    {typeof val === "boolean" ? (
-                      <input
-                        type="checkbox"
-                        checked={val}
-                        onChange={(e) => updatePropValue(key, e.target.checked)}
-                        style={{ alignSelf: "flex-start" }}
-                      />
-                    ) : typeof val === "number" ? (
-                      <input
-                        type="number"
-                        value={val}
-                        onChange={(e) => updatePropValue(key, Number(e.target.value))}
-                        style={fieldStyle}
-                      />
-                    ) : typeof val === "string" ? (
-                      <input
-                        type="text"
-                        value={val}
-                        onChange={(e) => updatePropValue(key, e.target.value)}
-                        style={fieldStyle}
-                      />
-                    ) : (
-                      <input
-                        type="text"
-                        value={JSON.stringify(val)}
-                        readOnly
-                        title="Edit complex objects in the JSON tab"
-                        style={{ ...fieldStyle, opacity: 0.7 }}
-                      />
-                    )}
-                  </label>
-                ))
+                fieldKeys.map((key) =>
+                  renderFieldControl(key, currentProps[key], activeComp.schema?.shape[key])
+                )
               )}
             </div>
           ) : (
@@ -642,6 +818,23 @@ export const Studio: React.FC<StudioProps> = ({
             </div>
           )}
 
+          {!schemaValidation.valid ? (
+            <div
+              style={{
+                background: "rgba(244, 63, 94, 0.12)",
+                border: "1px solid #f43f5e",
+                borderRadius: 6,
+                padding: 8,
+                fontSize: 11,
+                color: "#fda4af",
+              }}
+            >
+              {schemaValidation.errors.map((err, idx) => (
+                <div key={idx}>{err}</div>
+              ))}
+            </div>
+          ) : null}
+
           <button type="button" onClick={resetProps} style={{ ...transportBtnStyle, alignSelf: "flex-start" }}>
             Reset to Default Props
           </button>
@@ -674,7 +867,7 @@ export const Studio: React.FC<StudioProps> = ({
           <span>
             Timeline · {sequences.length} Sequences · {audioTracks.length} Audio Tracks
           </span>
-          <span>Shortcuts: Space (Play) · ←/→ (±1f) · Shift+←/→ (±10f)</span>
+          <span>Shortcuts: Space (Play) · ←/→ (±1f) · I/O (In/Out Loop)</span>
         </div>
 
         <div style={{ flex: 1, overflowY: "auto", padding: "6px 16px 10px", position: "relative" }}>
@@ -705,13 +898,30 @@ export const Studio: React.FC<StudioProps> = ({
               ))}
             </div>
 
+            {/* Active In/Out loop highlight */}
+            {inFrame !== null || outFrame !== null ? (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  bottom: 0,
+                  left: `${(loopStart / Math.max(1, resolvedConfig.durationInFrames)) * 100}%`,
+                  width: `${((loopEnd - loopStart + 1) / Math.max(1, resolvedConfig.durationInFrames)) * 100}%`,
+                  background: "rgba(53, 198, 244, 0.08)",
+                  borderLeft: "1px dashed #35C6F4",
+                  borderRight: "1px dashed #35C6F4",
+                  pointerEvents: "none",
+                }}
+              />
+            ) : null}
+
             {/* Playhead indicator */}
             <div
               style={{
                 position: "absolute",
                 top: 0,
                 bottom: 0,
-                left: `${(frame / Math.max(1, activeComp.durationInFrames)) * 100}%`,
+                left: `${(frame / Math.max(1, resolvedConfig.durationInFrames)) * 100}%`,
                 width: 2,
                 background: "#f43f5e",
                 zIndex: 5,
@@ -721,8 +931,8 @@ export const Studio: React.FC<StudioProps> = ({
 
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {sequences.map((seq, idx) => {
-                const leftPct = (seq.from / Math.max(1, activeComp.durationInFrames)) * 100;
-                const widthPct = (seq.durationInFrames / Math.max(1, activeComp.durationInFrames)) * 100;
+                const leftPct = (seq.from / Math.max(1, resolvedConfig.durationInFrames)) * 100;
+                const widthPct = (seq.durationInFrames / Math.max(1, resolvedConfig.durationInFrames)) * 100;
                 const color = PALETTE[idx % PALETTE.length];
                 return (
                   <div
@@ -761,8 +971,8 @@ export const Studio: React.FC<StudioProps> = ({
               })}
 
               {audioTracks.map((track) => {
-                const leftPct = (track.startFrame / Math.max(1, activeComp.durationInFrames)) * 100;
-                const widthPct = (track.durationInFrames / Math.max(1, activeComp.durationInFrames)) * 100;
+                const leftPct = (track.startFrame / Math.max(1, resolvedConfig.durationInFrames)) * 100;
+                const widthPct = (track.durationInFrames / Math.max(1, resolvedConfig.durationInFrames)) * 100;
                 return (
                   <div
                     key={track.id}
@@ -777,7 +987,7 @@ export const Studio: React.FC<StudioProps> = ({
                       style={{
                         position: "absolute",
                         left: `${leftPct}%`,
-                        width: `${Math.max(1, activeComp.durationInFrames ? widthPct : 100)}%`,
+                        width: `${Math.max(1, resolvedConfig.durationInFrames ? widthPct : 100)}%`,
                         top: 2,
                         bottom: 2,
                         background: "#10b981",

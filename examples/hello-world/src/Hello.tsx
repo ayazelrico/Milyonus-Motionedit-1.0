@@ -1,12 +1,16 @@
 import React from "react";
 import {
   Audio,
+  AudioWaveform,
   Captions,
   Easings,
   Sequence,
+  StrokePath,
   Transition,
   defineComposition,
   interpolate,
+  parseWavAudioData,
+  propSchema,
   randomRange,
   spring,
   useCurrentFrame,
@@ -17,6 +21,7 @@ import { createChimeWavDataUri } from "./tone.js";
 
 const INTRO_CHIME = createChimeWavDataUri(523.25, 0.55);
 const ACCENT_CHIME = createChimeWavDataUri(783.99, 0.45);
+const INTRO_WAVEFORM = parseWavAudioData(INTRO_CHIME);
 
 const Starfield: React.FC<{ count?: number }> = ({ count = 24 }) => {
   const frame = useCurrentFrame();
@@ -144,7 +149,30 @@ export const Hello: React.FC<HelloProps> = ({
       <Transition enter="fade" enterDuration={12}>
         <Title text={title} subtitle={subtitle} />
       </Transition>
-      {withAudio ? <Audio name="Intro Chime" src={INTRO_CHIME} volume={0.7} /> : null}
+      <svg
+        width="360"
+        height="24"
+        viewBox="0 0 360 24"
+        style={{ position: "absolute", left: "50%", top: "67%", transform: "translateX(-50%)" }}
+      >
+        <StrokePath
+          d="M 10 12 Q 180 2 350 12"
+          stroke={accentColor}
+          strokeWidth={4}
+          strokeLinecap="round"
+          fill="none"
+          delay={10}
+          durationInFrames={28}
+        />
+      </svg>
+      {withAudio ? (
+        <>
+          <Audio name="Intro Chime" src={INTRO_CHIME} volume={0.7} />
+          <div style={{ position: "absolute", top: 36, right: 48, opacity: 0.75 }}>
+            <AudioWaveform audioData={INTRO_WAVEFORM} bars={18} height={44} gap={4} color={accentColor} />
+          </div>
+        </>
+      ) : null}
     </Sequence>
     <Sequence name="Progress Bar" from={30} durationInFrames={60}>
       <Bar accentColor={accentColor} />
@@ -160,7 +188,7 @@ export const Hello: React.FC<HelloProps> = ({
 
 export const helloConfig = { width: 1280, height: 720, fps: 30, durationInFrames: 90 };
 
-export const LaunchCard: React.FC<{ headline?: string; tag?: string }> = ({
+export const LaunchCard: React.FC<{ headline?: string; tag?: string; aspect?: "square" | "portrait" }> = ({
   headline = "Write Films in TypeScript",
   tag = "@milyonus/core",
 }) => {
@@ -262,7 +290,14 @@ export const compositions = [
     id: "hello",
     component: Hello,
     ...helloConfig,
-    description: "16:9 hero intro with seeded particles, captions, transitions, and audio.",
+    description: "16:9 hero intro with seeded particles, SVG stroke, waveform, captions, and audio.",
+    schema: propSchema.object({
+      title: propSchema.string({ label: "Hero Title", minLength: 1 }),
+      subtitle: propSchema.string({ label: "Subtitle" }),
+      accentColor: propSchema.color({ label: "Accent Color" }),
+      showCaptions: propSchema.boolean({ label: "Show Captions" }),
+      withAudio: propSchema.boolean({ label: "Enable Chime Audio" }),
+    }),
     defaultProps: {
       title: "Milyonus",
       subtitle: "Motionedit 1.0",
@@ -278,11 +313,21 @@ export const compositions = [
     height: 1080,
     fps: 30,
     durationInFrames: 60,
-    description: "1:1 square social launch card.",
+    description: "Social launch card with dynamic 1:1 or 9:16 aspect via calculateMetadata.",
+    schema: propSchema.object({
+      headline: propSchema.string({ label: "Headline", minLength: 1 }),
+      tag: propSchema.string({ label: "Badge Tag" }),
+      aspect: propSchema.enum(["square", "portrait"], { label: "Aspect Ratio" }),
+    }),
     defaultProps: {
       headline: "Write Films in TypeScript",
       tag: "@milyonus/core",
+      aspect: "square" as "square" | "portrait",
     },
+    calculateMetadata: ({ props }) => ({
+      width: 1080,
+      height: props.aspect === "portrait" ? 1920 : 1080,
+    }),
   }),
   defineComposition({
     id: "sticker-badge",
@@ -292,6 +337,9 @@ export const compositions = [
     fps: 30,
     durationInFrames: 30,
     description: "Alpha-transparent lower-third/sticker overlay for WebM, ProRes, and GIF.",
+    schema: propSchema.object({
+      label: propSchema.string({ label: "Badge Text", minLength: 1 }),
+    }),
     defaultProps: {
       label: "LIVE",
     },

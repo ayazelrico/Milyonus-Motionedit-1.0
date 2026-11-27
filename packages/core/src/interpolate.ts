@@ -64,11 +64,13 @@ export const Easings = {
   bezier,
 };
 
+export type ExtrapolateType = "clamp" | "extend" | "identity";
+
 /** Options controlling easing and out-of-range extrapolation for `interpolate`. */
 export type InterpolateOptions = {
   easing?: Easing;
-  extrapolateLeft?: "clamp" | "extend";
-  extrapolateRight?: "clamp" | "extend";
+  extrapolateLeft?: ExtrapolateType;
+  extrapolateRight?: ExtrapolateType;
 };
 
 /**
@@ -87,8 +89,14 @@ export const interpolate = (
     if (inputRange[i] <= inputRange[i - 1]) throw new Error("inputRange must be strictly increasing.");
   }
   const last = inputRange.length - 1;
-  if (input < inputRange[0] && extrapolateLeft === "clamp") return outputRange[0];
-  if (input > inputRange[last] && extrapolateRight === "clamp") return outputRange[last];
+  if (input < inputRange[0]) {
+    if (extrapolateLeft === "clamp") return outputRange[0];
+    if (extrapolateLeft === "identity") return input;
+  }
+  if (input > inputRange[last]) {
+    if (extrapolateRight === "clamp") return outputRange[last];
+    if (extrapolateRight === "identity") return input;
+  }
 
   let i = 0;
   while (i < last - 1 && input > inputRange[i + 1]) i++;

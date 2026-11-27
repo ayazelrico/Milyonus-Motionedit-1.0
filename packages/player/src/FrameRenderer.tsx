@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  continueRender,
+  delayRender,
   resetDelayRenders,
+  resolveCompositionMetadata,
+  validateProps,
   waitForDelayRenders,
   type CompositionDefinition,
   type CompositionSummary,
@@ -99,7 +103,7 @@ const readInitialQueryOverrides = (): {
   return { compositionId, frame, transparent, props };
 };
 
-const toSummary = (comp: CompositionDefinition<any>): CompositionSummary => ({
+const toStaticSummary = (comp: CompositionDefinition<any>): CompositionSummary => ({
   id: comp.id,
   width: comp.width,
   height: comp.height,
@@ -111,8 +115,8 @@ const toSummary = (comp: CompositionDefinition<any>): CompositionSummary => ({
 
 /**
  * Render-mode driver page. Exposes `window.milyonusSetFrame(n)`, `window.milyonusSetInputProps`,
- * `delayRender` asset synchronization, alpha transparency control, composition discovery,
- * and audio/sequence inspection while mounting `#milyonus-stage` at 1:1 scale.
+ * schema validation, `calculateMetadata` resolution, `delayRender` asset synchronization,
+ * alpha transparency control, composition discovery, and audio/sequence inspection.
  */
 export const FrameRenderer: React.FC<FrameRendererProps> = (props) => {
   const queryInit = useMemo(readInitialQueryOverrides, []);
@@ -156,18 +160,36 @@ export const FrameRenderer: React.FC<FrameRendererProps> = (props) => {
     () => queryInit.props
   );
 
-  const audioMapRef = useRef<Map<string, ResolvedAudioTrack>>(new Map());
-  const seqMapRef = useRef<Map<string, TimelineSequenceEntry>>(new Map());
-
   const activeComp = useMemo(
     () => compositions.find((c) => c.id === selectedId) ?? compositions[0],
     [compositions, selectedId]
   );
 
+  const [resolvedConfig, setResolvedConfig] = useState<VideoConfig>(() => ({
+    width: activeComp.width,
+    height: activeComp.height,
+    fps: activeComp.fps,
+    durationInFrames: activeComp.durationInFrames,
+  }));
+  const [resolvedProps, setResolvedProps] = useState<Record<string, unknown>>(() => ({
+    ...(activeComp.defaultProps ?? {}),
+    ...(props.inputProps ?? {}),
+    ...(queryInit.props ?? {}),
+  }));
+
+  const audioMapRef = useRef<Map<string, ResolvedAudioTrack>>(new Map());
+  const seqMapRef = useRef<Map<string, TimelineSequenceEntry>>(new Map());
+
   const activeCompRef = useRef(activeComp);
   activeCompRef.current = activeComp;
+  const resolvedConfigRef = useRef(resolvedConfig);
+  resolvedConfigRef.current = resolvedConfig;
   const compositionsRef = useRef(compositions);
   compositionsRef.current = compositions;
+  const baseInputPropsRef = useRef(props.inputProps);
+  baseInputPropsRef.current = props.inputProps;
+  const overridePropsRef = useRef(overrideProps);
+  overridePropsRef.current = overrideProps;
 
   const inspector: InspectorAPI = useMemo(
     () => ({
@@ -181,6 +203,45 @@ export const FrameRenderer: React.FC<FrameRendererProps> = (props) => {
     []
   );
 
+  const applyCompositionAndProps = async (
+    comp: CompositionDefinition<any>,
+    nextOverrides: Record<string, unknown> | undefined
+  ): Promise<CompositionSummary> => {
+    const combinedOverrides = {
+      ...(baseInputPropsRef.current ?? {}),
+      ...(nextOverrides ?? {}),
+    };
+    const candidateProps = {
+      ...(comp.defaultProps ?? {}),
+      ...combinedOverrides,
+    };
+    if (comp.schema) {
+      const check = validateProps(comp.schema, candidateProps);
+      if (!check.valid) {
+        throw new Error(`Invalid props for composition "${comp.id}": ${check.errors.join(" ")}`);
+      }
+    }
+
+    const handle = delayRender(`calculateMetadata(${comp.id})`);
+    try {
+      const { config: nextCfg, props: nextProps } = await resolveCompositionMetadata(
+        comp,
+        combinedOverrides
+      );
+      resolvedConfigRef.current = nextCfg;
+      setResolvedConfig(nextCfg);
+      setResolvedProps(nextProps);
+      return {
+        id: comp.id,
+        ...nextCfg,
+        defaultProps: comp.defaultProps,
+        description: comp.description,
+      };
+    } finally {
+      continueRender(handle);
+    }
+  };
+
   useEffect(() => {
     if (typeof document !== "undefined") {
       document.documentElement.style.margin = "0";
@@ -191,80 +252,86 @@ export const FrameRenderer: React.FC<FrameRendererProps> = (props) => {
       document.body.style.background = "transparent";
     }
 
-    window.milyonusSetFrame = (n: number) => {
-      setFrame(n);
-      return waitCommitAndAssets();
-    };
+    let cancelled = false;
 
-    window.milyonusSetInputProps = (nextProps: Record<string, unknown>) => {
-      audioMapRef.current.clear();
-      seqMapRef.current.clear();
-      setOverrideProps(nextProps);
-      return waitCommitAndAssets();
-    };
+    const bootstrap = async () => {
+      await applyCompositionAndProps(activeCompRef.current, overridePropsRef.current);
+      if (cancelled) return;
 
-    window.milyonusSetTransparent = (value: boolean) => {
-      setTransparent(value);
-      return waitCommitAndAssets();
-    };
+      window.milyonusSetFrame = (n: number) => {
+        setFrame(n);
+        return waitCommitAndAssets();
+      };
 
-    window.milyonusGetConfig = () => toSummary(activeCompRef.current);
+      window.milyonusSetInputProps = async (nextProps: Record<string, unknown>) => {
+        audioMapRef.current.clear();
+        seqMapRef.current.clear();
+        overridePropsRef.current = nextProps;
+        setOverrideProps(nextProps);
+        await applyCompositionAndProps(activeCompRef.current, nextProps);
+        await waitCommitAndAssets();
+      };
 
-    window.milyonusListCompositions = () => compositionsRef.current.map(toSummary);
+      window.milyonusSetTransparent = (value: boolean) => {
+        setTransparent(value);
+        return waitCommitAndAssets();
+      };
 
-    window.milyonusSelectComposition = async (id: string) => {
-      const target = compositionsRef.current.find((c) => c.id === id);
-      if (!target) {
-        const available = compositionsRef.current.map((c) => c.id).join(", ");
-        throw new Error(`Composition "${id}" not found. Available: ${available}`);
-      }
-      resetDelayRenders();
-      audioMapRef.current.clear();
-      seqMapRef.current.clear();
-      setSelectedId(target.id);
-      setFrame(0);
+      window.milyonusGetConfig = () => ({
+        id: activeCompRef.current.id,
+        ...resolvedConfigRef.current,
+        defaultProps: activeCompRef.current.defaultProps,
+        description: activeCompRef.current.description,
+      });
+
+      window.milyonusListCompositions = () => compositionsRef.current.map(toStaticSummary);
+
+      window.milyonusSelectComposition = async (id: string) => {
+        const target = compositionsRef.current.find((c) => c.id === id);
+        if (!target) {
+          const available = compositionsRef.current.map((c) => c.id).join(", ");
+          throw new Error(`Composition "${id}" not found. Available: ${available}`);
+        }
+        resetDelayRenders();
+        audioMapRef.current.clear();
+        seqMapRef.current.clear();
+        activeCompRef.current = target;
+        setSelectedId(target.id);
+        setFrame(0);
+        const summary = await applyCompositionAndProps(target, overridePropsRef.current);
+        await waitCommitAndAssets();
+        return summary;
+      };
+
+      window.milyonusGetAudioTracks = () => Array.from(audioMapRef.current.values());
+      window.milyonusGetSequences = () => Array.from(seqMapRef.current.values());
       await waitCommitAndAssets();
-      return toSummary(target);
+      if (!cancelled) {
+        window.milyonusReady = true;
+      }
     };
 
-    window.milyonusGetAudioTracks = () => Array.from(audioMapRef.current.values());
-    window.milyonusGetSequences = () => Array.from(seqMapRef.current.values());
-    window.milyonusReady = true;
+    void bootstrap();
 
     return () => {
+      cancelled = true;
       window.milyonusReady = false;
       resetDelayRenders();
     };
   }, []);
 
-  const mergedProps = useMemo(
-    () => ({
-      ...(activeComp.defaultProps ?? {}),
-      ...(props.inputProps ?? {}),
-      ...(overrideProps ?? {}),
-    }),
-    [activeComp.defaultProps, props.inputProps, overrideProps]
-  );
-
-  const config: VideoConfig = useMemo(
-    () => ({
-      width: activeComp.width,
-      height: activeComp.height,
-      fps: activeComp.fps,
-      durationInFrames: activeComp.durationInFrames,
-    }),
-    [activeComp.width, activeComp.height, activeComp.fps, activeComp.durationInFrames]
-  );
-
   const renderPlayback = useMemo(() => ({ playing: false, muted: true, renderMode: true }), []);
 
   return (
-    <div id="milyonus-stage" style={{ width: config.width, height: config.height, margin: 0, padding: 0 }}>
+    <div
+      id="milyonus-stage"
+      style={{ width: resolvedConfig.width, height: resolvedConfig.height, margin: 0, padding: 0 }}
+    >
       <Stage
-        config={config}
+        config={resolvedConfig}
         frame={frame}
         component={activeComp.component}
-        props={mergedProps}
+        props={resolvedProps}
         scale={1}
         playback={renderPlayback}
         inspector={inspector}

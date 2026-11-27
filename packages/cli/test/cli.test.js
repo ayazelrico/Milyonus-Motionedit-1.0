@@ -134,23 +134,24 @@ test("E2E: compositions, still, parallel H.264+AAC MP4, transparent VP9 WebM, GI
       assert.ok(comps.some((c) => c.id === "launch-card" && c.width === 1080 && c.height === 1080));
       assert.ok(comps.some((c) => c.id === "sticker-badge" && c.width === 512 && c.height === 256));
 
-      // 2. Capture still PNG with custom props
+      // 2. Capture still PNG with dynamic calculateMetadata (aspect: "portrait" -> 1080x1920) & --scale 0.5 -> 540x960
       const stillPath = join(outDir, "card.png");
       const stillRes = await renderStill({
         url: renderUrl,
         composition: "launch-card",
         frame: 15,
-        props: { headline: "Custom Still Headline" },
+        scale: 0.5,
+        props: { headline: "Custom Still Headline", aspect: "portrait" },
         out: stillPath,
       });
-      assert.equal(stillRes.width, 1080);
-      assert.equal(stillRes.height, 1080);
+      assert.equal(stillRes.width, 540);
+      assert.equal(stillRes.height, 960);
       const pngBytes = await readFile(stillPath);
       assert.equal(pngBytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
-      assert.equal(pngBytes.readUInt32BE(16), 1080);
-      assert.equal(pngBytes.readUInt32BE(20), 1080);
+      assert.equal(pngBytes.readUInt32BE(16), 540);
+      assert.equal(pngBytes.readUInt32BE(20), 960);
 
-      // 3. Parallel render chunk 1 [0, 10) with audio muxed + chunk 2 [10, 20), then stitch
+      // 3. Parallel render chunk 1 [0, 10) with audio muxed + chunk 2 [10, 20) using JPEG fast intermediates, then stitch
       const chunk1 = join(outDir, "chunk1.mp4");
       const chunk2 = join(outDir, "chunk2.mp4");
       const stitched = join(outDir, "stitched.mp4");
@@ -162,6 +163,7 @@ test("E2E: compositions, still, parallel H.264+AAC MP4, transparent VP9 WebM, GI
         fromFrame: 0,
         toFrame: 10,
         concurrency: 2,
+        imageFormat: "jpeg",
         out: chunk1,
         quiet: true,
       });
@@ -173,14 +175,18 @@ test("E2E: compositions, still, parallel H.264+AAC MP4, transparent VP9 WebM, GI
         "-v",
         "error",
         "-show_entries",
-        "stream=codec_type,codec_name,width,height",
+        "stream=codec_type,codec_name,width,height,sample_rate,channels",
         "-of",
         "json",
         chunk1,
       ]);
       const probeJson = JSON.parse(probeOut);
       assert.ok(probeJson.streams.some((s) => s.codec_type === "video" && s.codec_name === "h264" && s.width === 1280));
-      assert.ok(probeJson.streams.some((s) => s.codec_type === "audio" && s.codec_name === "aac"));
+      assert.ok(
+        probeJson.streams.some(
+          (s) => s.codec_type === "audio" && s.codec_name === "aac" && s.sample_rate === "48000" && s.channels === 2
+        )
+      );
 
       await renderMedia({
         url: renderUrl,
@@ -189,6 +195,7 @@ test("E2E: compositions, still, parallel H.264+AAC MP4, transparent VP9 WebM, GI
         fromFrame: 10,
         toFrame: 20,
         concurrency: 2,
+        imageFormat: "jpeg",
         out: chunk2,
         quiet: true,
       });

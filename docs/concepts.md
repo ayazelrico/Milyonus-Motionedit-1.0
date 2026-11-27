@@ -1,8 +1,8 @@
 # Concepts
 
 - **Frame**: Integer time index (`0 .. durationInFrames - 1`). Seconds are derived (`frame / fps`), never stored as primary state.
-- **Composition**: A React component paired with `VideoConfig` (`width`, `height`, `fps`, `durationInFrames`) and optional `defaultProps`, declared directly or with `defineComposition`.
-- **`<AbsoluteFill>`**: Full-stage flex container (`position: "absolute"`, `inset: 0`) for clean layer stacking.
+- **Composition, `propSchema`, & `calculateMetadata`**: A React component paired with `VideoConfig`, optional `propSchema.object(...)` validation/controls, and optional sync/async `calculateMetadata({ props })` to derive dynamic dimensions or `durationInFrames` from `inputProps`.
+- **`<AbsoluteFill>` & `<StrokePath>`**: `<AbsoluteFill>` stacks full-stage flex layers; `evolvePath` and `<StrokePath>` animate deterministic SVG path line-drawing without DOM geometry queries.
 - **`<Sequence>` / `<Series>` / `<Loop>` / `<Freeze>`**:
   - `<Sequence>` scopes children to `[from, from + durationInFrames)` with zero-based local frames.
   - `<Series>` & `<Series.Sequence>` stack scenes sequentially (with optional `offset` overlaps) without manual cumulative math.

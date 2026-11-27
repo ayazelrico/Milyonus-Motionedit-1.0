@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   AbsoluteFill,
   Audio,
+  AudioWaveform,
   Captions,
   Easings,
   FrameProvider,
@@ -15,6 +16,7 @@ import {
   PlaybackContext,
   Sequence,
   Series,
+  StrokePath,
   Transition,
   Video,
   bezier,
@@ -23,6 +25,7 @@ import {
   createRandom,
   defineComposition,
   delayRender,
+  evolvePath,
   fadeIn,
   fadeInOut,
   fadeOut,
@@ -33,10 +36,13 @@ import {
   interpolateColors,
   parseColor,
   parseSrt,
+  parseWavAudioData,
+  propSchema,
   random,
   randomInt,
   randomRange,
   resetDelayRenders,
+  resolveCompositionMetadata,
   scaleIn,
   secondsToFrames,
   slideIn,
@@ -45,6 +51,8 @@ import {
   useAbsoluteFrame,
   useCurrentFrame,
   useVideoConfig,
+  validateProps,
+  visualizeAudio,
   waitForDelayRenders,
   wipeIn,
 } from "../dist/index.js";
@@ -54,11 +62,13 @@ test("interpolate maps linearly and supports multi-point segments", () => {
   assert.equal(interpolate(15, [0, 10, 20], [0, 1, 0]), 0.5);
 });
 
-test("interpolate clamps and extends on both sides", () => {
+test("interpolate clamps, extends, and applies identity extrapolation on both sides", () => {
   assert.equal(interpolate(-5, [0, 10], [0, 100], { extrapolateLeft: "clamp" }), 0);
   assert.equal(interpolate(-5, [0, 10], [0, 100], { extrapolateLeft: "extend" }), -50);
+  assert.equal(interpolate(-5, [0, 10], [0, 100], { extrapolateLeft: "identity" }), -5);
   assert.equal(interpolate(20, [0, 10], [0, 100], { extrapolateRight: "clamp" }), 100);
   assert.equal(interpolate(20, [0, 10], [0, 100], { extrapolateRight: "extend" }), 200);
+  assert.equal(interpolate(20, [0, 10], [0, 100], { extrapolateRight: "identity" }), 20);
 });
 
 test("interpolate applies built-in, bezier, and custom easings and validates ranges", () => {
@@ -343,4 +353,116 @@ test("Audio, Img, and Video render cleanly and report sequence-sliced audio meta
     defaultProps: { title: "Demo" },
   });
   assert.equal(comp.id, "demo");
+});
+
+test("spring supports delay, durationInFrames, and overshootClamping", () => {
+  assert.equal(spring({ frame: 10, fps: 30, delay: 12 }), 0);
+  assert.ok(spring({ frame: 15, fps: 30, delay: 12 }) > 0);
+  assert.equal(spring({ frame: 25, fps: 30, durationInFrames: 25, from: 0, to: 100 }), 100);
+
+  for (let f = 0; f <= 60; f++) {
+    const clamped = spring({
+      frame: f,
+      fps: 30,
+      config: { stiffness: 220, damping: 4, overshootClamping: true },
+    });
+    assert.ok(clamped <= 1 && clamped >= 0);
+  }
+});
+
+test("propSchema, validateProps, and resolveCompositionMetadata validate and compute dynamic metadata", async () => {
+  const schema = propSchema.object({
+    title: propSchema.string({ minLength: 2 }),
+    count: propSchema.number({ min: 1, max: 10 }),
+    accent: propSchema.color(),
+    mode: propSchema.enum(["square", "portrait"]),
+    active: propSchema.boolean(),
+  });
+
+  assert.equal(
+    validateProps(schema, {
+      title: "OK",
+      count: 5,
+      accent: "#35c6f4",
+      mode: "portrait",
+      active: true,
+    }).valid,
+    true
+  );
+
+  const bad = validateProps(schema, {
+    title: "A",
+    count: 99,
+    accent: "",
+    mode: "landscape",
+    active: "yes",
+  });
+  assert.equal(bad.valid, false);
+  assert.equal(bad.errors.length, 5);
+
+  const dynamicComp = defineComposition({
+    id: "dyn",
+    component: () => null,
+    width: 1080,
+    height: 1080,
+    fps: 30,
+    durationInFrames: 60,
+    defaultProps: { slides: 2, portrait: false },
+    calculateMetadata: async ({ props }) => ({
+      height: props.portrait ? 1920 : 1080,
+      durationInFrames: props.slides * 30,
+    }),
+  });
+
+  const resolved = await resolveCompositionMetadata(dynamicComp, { slides: 4, portrait: true });
+  assert.equal(resolved.config.height, 1920);
+  assert.equal(resolved.config.durationInFrames, 120);
+});
+
+test("parseWavAudioData, visualizeAudio, AudioWaveform, evolvePath, and StrokePath are deterministic", () => {
+  // Build a tiny 16-bit mono PCM WAV buffer with a 440Hz sine wave
+  const sr = 8000;
+  const numSamples = 800;
+  const buf = new ArrayBuffer(44 + numSamples * 2);
+  const view = new DataView(buf);
+  const writeStr = (off, s) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + numSamples * 2, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sr, true);
+  view.setUint32(28, sr * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, numSamples * 2, true);
+  for (let i = 0; i < numSamples; i++) {
+    view.setInt16(44 + i * 2, Math.round(Math.sin((2 * Math.PI * 440 * i) / sr) * 20000), true);
+  }
+
+  const wav = parseWavAudioData(buf);
+  assert.equal(wav.sampleRate, 8000);
+  assert.equal(wav.numberOfChannels, 1);
+  const barsA = visualizeAudio({ audioData: wav, frame: 1, fps: 30, numberOfSamples: 16 });
+  const barsB = visualizeAudio({ audioData: wav, frame: 1, fps: 30, numberOfSamples: 16 });
+  assert.deepEqual(barsA, barsB);
+  assert.equal(barsA.length, 16);
+  assert.ok(barsA.some((v) => v > 0.1));
+
+  assert.deepEqual(evolvePath(0.5, 100), { strokeDasharray: "100 100", strokeDashoffset: 50 });
+
+  const svgAndWaveHtml = renderToStaticMarkup(
+    React.createElement(
+      FrameProvider,
+      { value: { width: 1280, height: 720, fps: 30, durationInFrames: 60, frame: 15 } },
+      React.createElement(AudioWaveform, { audioData: wav, bars: 8 }),
+      React.createElement("svg", null, React.createElement(StrokePath, { d: "M 0 0 L 10 10", durationInFrames: 30 }))
+    )
+  );
+  assert.match(svgAndWaveHtml, /stroke-dashoffset="0\.5"/);
 });

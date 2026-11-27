@@ -1,13 +1,39 @@
 {
   "name": "@milyonus/player",
   "version": "0.1.0",
+  "description": "Embeddable preview player, headless frame renderer, and interactive Studio shell for Milyonus Motionedit.",
   "license": "MIT",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "files": ["dist"],
-  "scripts": { "build": "tsc -p ." },
-  "peerDependencies": { "react": ">=18" },
-  "dependencies": { "@milyonus/core": "*" },
-  "devDependencies": { "react": "^18.3.0" }
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ayazelrico/Milyonus-Motionedit-1.0.git",
+    "directory": "packages/player"
+  },
+  "homepage": "https://www.milyonus.com",
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "tsc -p . && node --test test/player.test.js"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "dependencies": {
+    "@milyonus/core": "^0.1.0"
+  },
+  "devDependencies": {
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  }
 }

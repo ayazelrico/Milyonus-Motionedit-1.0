@@ -1,15 +1,36 @@
 {
   "name": "@milyonus/core",
   "version": "0.1.0",
+  "description": "Dependency-free frame context, sequences, motion primitives, captions, transitions, and audio primitives for Milyonus Motionedit.",
   "license": "MIT",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "files": ["dist"],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ayazelrico/Milyonus-Motionedit-1.0.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://www.milyonus.com",
   "scripts": {
     "build": "tsc -p .",
     "test": "tsc -p . && node --test test/core.test.js"
   },
-  "peerDependencies": { "react": ">=18" },
-  "devDependencies": { "react": "^18.3.0" }
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  }
 }

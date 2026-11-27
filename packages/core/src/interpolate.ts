@@ -1,5 +1,7 @@
+/** Pure unit-interval curve mapping `t` in `[0, 1]` to an eased value. */
 export type Easing = (t: number) => number;
 
+/** Built-in cubic and linear easing functions. */
 export const Easings = {
   linear: ((t) => t) as Easing,
   easeIn: ((t) => t * t * t) as Easing,
@@ -7,6 +9,7 @@ export const Easings = {
   easeInOut: ((t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)) as Easing,
 };
 
+/** Options controlling easing and out-of-range extrapolation for `interpolate`. */
 export type InterpolateOptions = {
   easing?: Easing;
   extrapolateLeft?: "clamp" | "extend";

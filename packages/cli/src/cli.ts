@@ -1,70 +1,160 @@
 #!/usr/bin/env node
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import { spawn } from "node:child_process";
-import puppeteer from "puppeteer";
+import {
+  getNonNegativeIntFlag,
+  getPositiveIntFlag,
+  getStringFlag,
+  parseCliArgs,
+} from "./args.js";
+import {
+  listCompositions,
+  renderMedia,
+  renderStill,
+  stitchMediaChunks,
+} from "./renderer.js";
+import { runBatchQueue, startWorkerServer } from "./worker.js";
 
-const args = process.argv.slice(2);
-const cmd = args[0];
+const VERSION = "0.1.0";
 
-const opt = (name: string, def: string): string => {
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 && args[i + 1] ? args[i + 1] : def;
-};
+const usage = `Milyonus Motionedit CLI v${VERSION}
 
-const usage = `Usage:
-  milyonus render --url <render-page-url> --out <file.mp4> --width 1280 --height 720 --fps 30 --frames 90
+Usage:
+  milyonus render [options]         Render a composition (or frame range) to H.264 MP4
+  milyonus still [options]          Capture a single deterministic frame to PNG/JPEG/WebP
+  milyonus compositions [options]   List compositions discovered on the render page
+  milyonus stitch [options]         Losslessly concatenate rendered MP4 chunks
+  milyonus worker [options]         Run a batch render queue or HTTP cloud worker
 
-The render page must expose window.milyonusSetFrame (use <FrameRenderer /> from @milyonus/player).
-Requires FFmpeg on your PATH.`;
+Render options:
+  --url <url>             Render page URL (default: http://localhost:5173/?render=1)
+  --serve <dir>           Auto-start a Vite server for <dir> instead of --url
+  --composition <id>      Select a composition ID on multi-composition pages
+  --props <json|file>     Inline JSON object or path to a .json props file
+  --out <file.mp4>        Output MP4 path (default: out/video.mp4)
+  --width <px>            Override stage width (defaults to composition config)
+  --height <px>           Override stage height (defaults to composition config)
+  --fps <n>               Override frame rate (defaults to composition config)
+  --frames <n>            Override total frames (defaults to composition config)
+  --from-frame <n>        Start frame (inclusive) for chunk rendering
+  --to-frame <n>          End frame (exclusive) for chunk rendering
+  --concurrency <n>       Number of parallel headless tabs (default: 1)
+  --muted                 Omit <Audio> tracks from output
 
-const run = (bin: string, a: string[]) =>
-  new Promise<void>((res, rej) => {
-    const p = spawn(bin, a, { stdio: "inherit" });
-    p.on("error", rej);
-    p.on("exit", (code) => (code === 0 ? res() : rej(new Error(`${bin} exited with ${code}`))));
-  });
+Still options:
+  --url <url> | --serve <dir>
+  --composition <id>      Select composition ID
+  --props <json|file>     Inline JSON object or path to a .json props file
+  --frame <n>             Frame index to capture (default: 0)
+  --out <file.png>        Output image path (.png, .jpg, .webp; default: out/still.png)
+  --width <px>            Override width
+  --height <px>           Override height
 
-async function render() {
-  const url = opt("url", "http://localhost:5173/?render=1");
-  const out = opt("out", "out/video.mp4");
-  const width = Number(opt("width", "1280"));
-  const height = Number(opt("height", "720"));
-  const fps = Number(opt("fps", "30"));
-  const frames = Number(opt("frames", "90"));
+Stitch options:
+  --chunks <a.mp4,b.mp4>  Comma-separated ordered MP4 chunk paths
+  --out <final.mp4>       Output stitched MP4 path (default: out/stitched.mp4)
 
-  await mkdir(dirname(out), { recursive: true });
-  const dir = await mkdtemp(join(tmpdir(), "milyonus-"));
-  const browser = await puppeteer.launch({ headless: true });
-  try {
-    const page = await browser.newPage();
-    await page.setViewport({ width, height, deviceScaleFactor: 1 });
-    await page.goto(url, { waitUntil: "networkidle0" });
-    await page.waitForFunction("window.milyonusReady === true", { timeout: 30000 });
-    const stage = await page.$("#milyonus-stage");
-    if (!stage) throw new Error("#milyonus-stage not found on the render page.");
+Worker options:
+  --queue <jobs.json>     Execute a batch JSON queue of render/still jobs and exit
+  --port <n>              Start an HTTP render queue worker on port <n> (default: 4321)
+  --host <addr>           Bind address for HTTP worker (default: 0.0.0.0)`;
 
-    for (let f = 0; f < frames; f++) {
-      await page.evaluate((n: number) => (window as any).milyonusSetFrame(n), f);
-      const file = join(dir, `frame-${String(f).padStart(6, "0")}.png`) as `${string}.png`;
-      await stage.screenshot({ path: file });
-      if (f % 10 === 0) process.stdout.write(`\rFrame ${f + 1}/${frames}`);
-    }
-    process.stdout.write(`\rFrame ${frames}/${frames}\n`);
-  } finally {
-    await browser.close();
+async function main(): Promise<void> {
+  const { command, flags } = parseCliArgs(process.argv.slice(2));
+
+  if (flags.version) {
+    console.log(VERSION);
+    return;
   }
-  await run("ffmpeg", ["-y", "-framerate", String(fps), "-i", join(dir, "frame-%06d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p", out]);
-  await rm(dir, { recursive: true, force: true });
-  console.log(`Done: ${out}`);
+  if (flags.help || !command) {
+    console.log(usage);
+    return;
+  }
+
+  if (command === "render") {
+    await renderMedia({
+      url: getStringFlag(flags, "url"),
+      serve: getStringFlag(flags, "serve"),
+      composition: getStringFlag(flags, "composition"),
+      props: getStringFlag(flags, "props"),
+      out: getStringFlag(flags, "out", "out/video.mp4"),
+      width: getPositiveIntFlag(flags, "width"),
+      height: getPositiveIntFlag(flags, "height"),
+      fps: getPositiveIntFlag(flags, "fps"),
+      frames: getPositiveIntFlag(flags, "frames"),
+      fromFrame: getNonNegativeIntFlag(flags, "from-frame"),
+      toFrame: getPositiveIntFlag(flags, "to-frame"),
+      concurrency: getPositiveIntFlag(flags, "concurrency", 1),
+      muted: Boolean(flags.muted),
+    });
+    return;
+  }
+
+  if (command === "still") {
+    const res = await renderStill({
+      url: getStringFlag(flags, "url"),
+      serve: getStringFlag(flags, "serve"),
+      composition: getStringFlag(flags, "composition"),
+      props: getStringFlag(flags, "props"),
+      frame: getNonNegativeIntFlag(flags, "frame", 0),
+      out: getStringFlag(flags, "out", "out/still.png"),
+      width: getPositiveIntFlag(flags, "width"),
+      height: getPositiveIntFlag(flags, "height"),
+    });
+    console.log(`Done: ${res.out} (frame ${res.frame}, ${res.width}x${res.height})`);
+    return;
+  }
+
+  if (command === "compositions") {
+    const list = await listCompositions({
+      url: getStringFlag(flags, "url"),
+      serve: getStringFlag(flags, "serve"),
+    });
+    if (list.length === 0) {
+      console.log("No compositions discovered.");
+      return;
+    }
+    for (const c of list) {
+      console.log(
+        `${c.id}\t${c.width}x${c.height}\t${c.fps}fps\t${c.durationInFrames} frames${
+          c.description ? `\t— ${c.description}` : ""
+        }`
+      );
+    }
+    return;
+  }
+
+  if (command === "stitch") {
+    const rawChunks = getStringFlag(flags, "chunks");
+    if (!rawChunks) {
+      throw new Error("milyonus stitch requires --chunks <chunk1.mp4,chunk2.mp4,...>");
+    }
+    const chunks = rawChunks
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const out = await stitchMediaChunks(chunks, getStringFlag(flags, "out", "out/stitched.mp4"));
+    console.log(`Done: ${out}`);
+    return;
+  }
+
+  if (command === "worker") {
+    const queueFile = getStringFlag(flags, "queue");
+    if (queueFile) {
+      const records = await runBatchQueue(queueFile);
+      console.log(`Completed ${records.length} queued job(s).`);
+      return;
+    }
+    const port = getPositiveIntFlag(flags, "port", 4321);
+    const host = getStringFlag(flags, "host", "0.0.0.0");
+    await startWorkerServer({ port, host });
+    return;
+  }
+
+  console.error(`Unknown command: "${command}"\n`);
+  console.log(usage);
+  process.exit(1);
 }
 
-if (cmd === "render") {
-  render().catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
-} else {
-  console.log(usage);
-}
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+});

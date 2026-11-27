@@ -1,10 +1,36 @@
 {
   "name": "@milyonus/cli",
   "version": "0.1.0",
+  "description": "Headless Chromium renderer, still image exporter, parallel chunk encoder, audio muxer, and queue worker for Milyonus Motionedit.",
   "license": "MIT",
   "type": "module",
-  "bin": { "milyonus": "dist/cli.js" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "milyonus": "./dist/cli.js"
+  },
   "files": ["dist"],
-  "scripts": { "build": "tsc -p ." },
-  "dependencies": { "puppeteer": "^23.0.0" }
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ayazelrico/Milyonus-Motionedit-1.0.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://www.milyonus.com",
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "tsc -p . && node --test test/cli.test.js"
+  },
+  "dependencies": {
+    "@milyonus/core": "^0.1.0",
+    "puppeteer": "^23.0.0"
+  }
 }

@@ -20,7 +20,7 @@
 [![React](https://img.shields.io/badge/react-18-61DAFB.svg)](package.json)
 [![Version](https://img.shields.io/badge/version-0.1.0-071233.svg)](package.json)
 
-Milyonus Motionedit is an open-source motion-graphics runtime. You describe every pixel of a film as a React component of the current frame, preview it in the browser, and render it to MP4. There is no timeline file, no proprietary project format, and no hidden interpolation curve. The composition is the source of truth. The same frame, evaluated twice, produces the same picture.
+Milyonus Motionedit is an open-source motion-graphics runtime. You describe every pixel and audio cue of a film as a React component of the current frame, preview and inspect it in the browser Studio, and render it to H.264 MP4 or still images. There is no timeline project file, no proprietary format, and no hidden interpolation curve. The composition is the source of truth. The same frame, evaluated twice, produces the same picture.
 
 > Motionedit is an independent project by [Milyonus](https://www.milyonus.com). Its architecture is *inspired by* the React-first, frame-pure model popularised by [Remotion](https://github.com/remotion-dev/remotion). It contains **no Remotion source**, shares no license with Remotion, and is released under plain [MIT](LICENSE).
 
@@ -30,22 +30,21 @@ Milyonus Motionedit is an open-source motion-graphics runtime. You describe ever
 
 - [The thesis](#the-thesis)
 - [Why write a video](#why-write-a-video)
-- [What 1.0 actually is](#what-10-actually-is)
+- [What 1.0 ships](#what-10-ships)
 - [Architecture](#architecture)
 - [Repository map](#repository-map)
 - [Requirements](#requirements)
 - [Get started](#get-started)
 - [Anatomy of a composition](#anatomy-of-a-composition)
 - [Time, frames, and sequences](#time-frames-and-sequences)
-- [Motion primitives](#motion-primitives)
-- [The player](#the-player)
+- [Motion primitives & seeded randomness](#motion-primitives--seeded-randomness)
+- [Transitions, captions, and audio](#transitions-captions-and-audio)
+- [Player and Studio](#player-and-studio)
 - [The render contract](#the-render-contract)
-- [CLI reference](#cli-reference)
+- [CLI & programmatic reference](#cli--programmatic-reference)
+- [Parallel, chunked, and cloud rendering](#parallel-chunked-and-cloud-rendering)
 - [Determinism](#determinism)
-- [Parameterized films](#parameterized-films)
 - [Design rules](#design-rules)
-- [What is deliberately missing](#what-is-deliberately-missing)
-- [Roadmap](#roadmap)
 - [Contributing](#contributing)
 - [License and attribution](#license-and-attribution)
 
@@ -55,86 +54,69 @@ Milyonus Motionedit is an open-source motion-graphics runtime. You describe ever
 
 Traditional motion software stores a film as a document: layers, keyframes, easing handles, a binary or XML project that only one application can open. That model is excellent for a single artist at a single desk. It is a poor model for software.
 
-Motionedit takes the opposite position, the one Remotion made legible to a generation of frontend engineers:
+Motionedit takes the opposite position:
 
 ```text
-frame  →  React tree  →  pixels
+frame  →  React tree  →  pixels + audio slice
 ```
 
-A composition is a function. Its only clock is an integer. Width, height, frame rate, and duration are configuration, not accidents of a preview window. Sequences are scopes that shift that integer. Springs and interpolations are pure calculations over it. The preview player and the renderer are two drivers of the same function: one advances time with `requestAnimationFrame`, the other sets the frame explicitly, waits for React to commit, and photographs the stage.
-
-If you can render frame 41 in isolation, you can render a film. If you cannot, you do not have a film. You have a slideshow that happens to be playing.
+A composition is a function. Its only clock is an integer. Width, height, frame rate, and duration are configuration, not accidents of a preview window. Sequences are scopes that shift that integer. Springs, interpolations, transitions, and seeded random values are pure calculations over it. The preview player, the Studio, and the headless renderer are drivers of the same function.
 
 ---
 
 ## Why write a video
 
-A timeline is a closed artifact. A React composition is a program, and programs compose.
-
-- **Version control.** A title change is a diff. A timing change is a diff. There is no "which export is the real one."
-- **Parameterization.** The same component can render a hundred variants. Pass `inputProps`. Change the name, the color, the claim. The motion stays.
-- **Reuse.** A lower third, a progress bar, an intro card: they are components. They accept props. They live in a folder.
-- **Determinism.** Frame 60 on your laptop and frame 60 in CI are the same frame, provided you do not cheat with wall-clock time or unseeded randomness.
-- **The stack you already have.** TypeScript, Vite, React 18, npm workspaces. No new IDE. No plugin host.
-
-Motionedit is for product films, launch cards, data-driven explainers, social cuts, and any motion that should live next to the application that produced the data. It is not a replacement for a finishing suite, a color grade, or a multi-track editorial timeline. It is the layer where motion becomes code.
+- **Version control.** A title change is a diff. A timing change is a diff.
+- **Parameterization.** Pass `--props data.json` or inline JSON to render a hundred localized variants from a single component.
+- **Reuse.** Lower thirds, captions, progress bars, and intro cards are ordinary React components.
+- **Determinism.** Frame 60 on your laptop and frame 60 on a parallel cloud worker are identical.
+- **The stack you already have.** TypeScript, Vite, React 18, npm workspaces.
 
 ---
 
-## What 1.0 actually is
+## What 1.0 ships
 
-The repository is named Motionedit 1.0 because the *contract* is stable enough to build on: frame context, sequences, interpolate, spring, an embeddable player, and a headless renderer. The published package version is `0.1.0`. That distinction is intentional.
-
-Shipped today:
-
-| Surface | Package | What it does |
+| Surface | Package | What it provides |
 |---|---|---|
-| Core runtime | `@milyonus/core` | Frame context, `Sequence`, `interpolate`, `spring` |
-| Preview | `@milyonus/player` | `<Player>` with play, pause, and scrub |
-| Still capture | `@milyonus/player` | `<FrameRenderer>` exposing `window.milyonusSetFrame` |
-| Encoder | `@milyonus/cli` | Headless Chromium screenshots, FFmpeg to H.264 |
-| Example | `examples/hello-world` | A 90-frame, 1280×720, 30 fps composition |
-
-Not shipped, and not pretended: audio, captions, a transition pack, parallel frame rendering, a studio timeline, cloud render workers. Those belong on the roadmap, not in the feature list.
+| Core runtime | `@milyonus/core` | `FrameContext`, `Sequence`, `interpolate`, `spring`, `random`, `Transition`, `Captions`, `Audio`, `defineComposition` (zero runtime dependencies) |
+| Embeddable preview | `@milyonus/player` | `<Player>` with play/pause, frame-stepping, mute toggle, timecode, and scrubber |
+| Interactive workspace | `@milyonus/player` | `<Studio>` with composition switcher, live prop controls + JSON editor, CLI command generator, and sequence/audio timeline |
+| Capture driver | `@milyonus/player` | `<FrameRenderer>` exposing `window.milyonusSetFrame`, prop injection, composition discovery, and audio/sequence inspection |
+| Renderer & Worker CLI | `@milyonus/cli` | `milyonus render` (parallel tabs, audio muxing, `--serve`, `--props`), `still`, `compositions`, `stitch`, and `worker` (batch + HTTP queue) |
+| Example | `examples/hello-world` | Multi-composition Vite workspace (`hello` 1280×720 + `launch-card` 1080×1080) |
 
 ---
 
 ## Architecture
 
-Four layers. Each one is boring on purpose.
-
 ```text
 ┌───────────────────────────────────────────────────────────┐
-│  Composition                                              │
-│  React component. Reads frame. Returns elements.          │
-└───────────────────────────┬──────────────────────────────┘
-                             │
-┌───────────────────────────▼──────────────────────────────┐
-│  @milyonus/core                                           │
-│  FrameContext · Sequence · interpolate · spring           │
-└───────────────────────────┬──────────────────────────────┘
-                             │
-          ┌─────────────────┴─────────────────┐
-          │                                     │
-┌─────────▼──────────┐               ┌──────────▼───────────┐
-│  Player            │               │  FrameRenderer      │
-│  rAF clock         │               │  imperative clock   │
-│  scrubber          │               │  #milyonus-stage    │
-└───────────────────┘               └──────────┬──────────┘
-                                                │
-                                     ┌──────────▼───────────┐
-                                     │  @milyonus/cli      │
-                                     │  Puppeteer → PNG    │
-                                     │  FFmpeg → MP4       │
-                                     └─────────────────────┘
+│  Composition(s)                                           │
+│  React 18 components reading frame + props                │
+└───────────────────────────┬───────────────────────────────┘
+                            │
+┌───────────────────────────▼───────────────────────────────┐
+│  @milyonus/core  (dependency-free; React peer only)       │
+│  FrameContext · Sequence · interpolate · spring · random  │
+│  Transition · Captions · Audio · defineComposition        │
+└──────────┬───────────────────────┬────────────────────────┘
+           │                       │
+┌──────────▼──────────┐  ┌─────────▼───────────┐
+│  Player & Studio    │  │  FrameRenderer      │
+│  rAF preview        │  │  #milyonus-stage    │
+│  Timeline + Props   │  │  window.milyonus*   │
+└─────────────────────┘  └─────────┬───────────┘
+                                   │
+                         ┌─────────▼───────────┐
+                         │  @milyonus/cli      │
+                         │  Parallel Chromium  │
+                         │  FFmpeg H.264 + AAC │
+                         │  Still · Stitch ·   │
+                         │  Queue Worker       │
+                         └─────────────────────┘
 ```
 
-1. `@milyonus/core` publishes a `FrameContext`: `frame`, `width`, `height`, `fps`, `durationInFrames`. Hooks refuse to run outside it.
-2. `<Sequence>` subtracts `from` from the parent frame, remounts children in a fresh context, and returns `null` outside `[from, from + durationInFrames)`.
-3. `@milyonus/player` mounts the composition inside a sized stage. Preview scales with CSS. Render mode does not.
-4. `@milyonus/cli` opens the render URL, waits until `window.milyonusReady === true`, calls `window.milyonusSetFrame(n)` for each frame, screenshots `#milyonus-stage`, then encodes with `libx264` and `yuv420p`.
-
-The full design note is in [DESIGN.md](DESIGN.md). The short concept list is in [docs/concepts.md](docs/concepts.md).
+See [DESIGN.md](DESIGN.md), [docs/architecture.md](docs/architecture.md), [docs/concepts.md](docs/concepts.md), and [docs/cloud-rendering.md](docs/cloud-rendering.md).
 
 ---
 
@@ -143,28 +125,24 @@ The full design note is in [DESIGN.md](DESIGN.md). The short concept list is in 
 ```text
 Milyonus-Motionedit-1.0
 ├── packages/core          @milyonus/core
-├── packages/player        @milyonus/player
-├── packages/cli           @milyonus/cli   bin: milyonus
-├── examples/hello-world   Vite preview and render target
-├── docs                   concepts and architecture
-├── .github/workflows      CI: install, build, typecheck, test
+├── packages/player        @milyonus/player  (Player, Studio, FrameRenderer, Stage)
+├── packages/cli           @milyonus/cli     (bin: milyonus + Node API)
+├── examples/hello-world   Multi-composition Studio, Player, and Render target
+├── docs                   concepts, architecture, and cloud rendering guides
+├── .github/workflows      CI: npm ci, build, typecheck, unit + E2E tests
 ├── DESIGN.md
 ├── CONTRIBUTING.md
 └── LICENSE                MIT
 ```
-
-Workspaces are declared at the root. Build order is core, then player, then cli.
 
 ---
 
 ## Requirements
 
 - Node.js 20 or newer
-- npm 10 (workspaces)
-- FFmpeg on `PATH` for MP4 output (`ffmpeg -version` must succeed)
-- A local Chromium, downloaded by Puppeteer on first render
-
-No GPU is required. The renderer photographs the DOM, it does not composite in WebGL.
+- npm 10+ (workspaces)
+- FFmpeg on `PATH` for MP4 video/audio output (`ffmpeg -version`)
+- Chromium or Google Chrome (managed by Puppeteer or system binary)
 
 ---
 
@@ -178,143 +156,90 @@ npm run build
 npm run dev
 ```
 
-The example preview is served by Vite at [http://localhost:5173](http://localhost:5173). You get a player: play, pause, and a scrubber over 90 frames.
+Open the Vite server URL (`http://localhost:5173`) to launch `<Studio>` (or append `?player=1` for the minimal `<Player>`).
 
-In a second terminal, with the dev server still running:
-
-```bash
-npm run render -w hello-world
-```
-
-That writes `examples/hello-world/out/hello.mp4`.
-
-The render script is explicit about every parameter:
+Render directly from the CLI—either against a running server (`--url`) or by letting the CLI start and stop Vite automatically (`--serve`):
 
 ```bash
-milyonus render \
-  --url http://localhost:5173/?render=1 \
-  --out out/hello.mp4 \
-  --width 1280 \
-  --height 720 \
-  --fps 30 \
-  --frames 90
+npm run render
+npm run still
 ```
 
-`?render=1` is the switch in `examples/hello-world/src/main.tsx`. Without it, the page mounts `<Player>`. With it, the page mounts `<FrameRenderer>` and exposes the capture contract.
-
-Useful root scripts:
+Root scripts:
 
 | Script | Effect |
 |---|---|
-| `npm run build` | Compiles core, player, and cli |
-| `npm run dev` | Starts the hello-world preview |
-| `npm run render` | Renders hello-world to MP4 |
-| `npm run typecheck` | `tsc --noEmit` across the three packages |
-| `npm test` | Core unit tests |
+| `npm run build` | Compiles `@milyonus/core`, `@milyonus/player`, `@milyonus/cli`, and `hello-world` |
+| `npm run dev` | Starts the `hello-world` Studio/preview server |
+| `npm run render` | Renders `hello` to `examples/hello-world/out/hello.mp4` (`--concurrency 2`) |
+| `npm run still` | Captures frame 45 to `examples/hello-world/out/hello.png` |
+| `npm run typecheck` | Runs `tsc --noEmit` across all packages and examples |
+| `npm test` | Runs unit, SSR, and headless Chrome + FFmpeg E2E tests |
 
 ---
 
 ## Anatomy of a composition
 
-A composition is a component plus a config. The config in the example is the contract the renderer must be told about separately, because the CLI does not yet parse your source:
+Declare one or multiple compositions with `defineComposition`:
 
 ```tsx
-export const helloConfig = {
-  width: 1280,
-  height: 720,
-  fps: 30,
-  durationInFrames: 90,
-};
-```
+import {
+  Sequence,
+  Transition,
+  Captions,
+  Audio,
+  defineComposition,
+  useCurrentFrame,
+  useVideoConfig,
+  interpolate,
+  spring,
+} from "@milyonus/core";
 
-Seconds are derived, never stored: `durationInFrames / fps` is 3. Frame 0 is the first picture. Frame 89 is the last.
-
-The example composition, reduced to the idea:
-
-```tsx
-import { Sequence, useCurrentFrame, useVideoConfig, interpolate, spring, Easings } from "@milyonus/core";
-
-const Title = ({ text }: { text: string }) => {
+export const Hello = ({ title = "Milyonus" }: { title?: string }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const scale = spring({ frame, fps, config: { damping: 12 } });
   const opacity = interpolate(frame, [0, 15], [0, 1], { extrapolateRight: "clamp" });
 
   return (
-    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <h1 style={{ fontSize: 140, margin: 0, color: "#fff", opacity, transform: `scale(${scale})` }}>
-        {text}
-      </h1>
+    <div style={{ flex: 1, display: "flex", background: "#0b132b", position: "relative" }}>
+      <Sequence name="Hero" from={0}>
+        <Transition enter="fade" enterDuration={12}>
+          <h1 style={{ margin: "auto", fontSize: 132, color: "#fff", opacity, transform: `scale(${scale})` }}>
+            {title}
+          </h1>
+        </Transition>
+      </Sequence>
+      <Captions cues={[{ from: 5, to: 85, text: "Frame in. Pixels out." }]} />
     </div>
   );
 };
 
-export const Hello = ({ title = "Milyonus" }: { title?: string }) => (
-  <div style={{ flex: 1, position: "relative", display: "flex", background: "linear-gradient(135deg,#0b132b,#3a506b)" }}>
-    <Sequence from={0}>
-      <Title text={title} />
-    </Sequence>
-    <Sequence from={30} durationInFrames={60}>
-      <Bar />
-    </Sequence>
-  </div>
-);
-```
-
-Preview and render share that component. `main.tsx` only chooses the driver:
-
-```tsx
-const isRender = new URLSearchParams(location.search).has("render");
-
-isRender
-  ? <FrameRenderer component={Hello} {...helloConfig} />
-  : <Player component={Hello} {...helloConfig} previewWidth={800} />;
+export const helloComposition = defineComposition({
+  id: "hello",
+  component: Hello,
+  width: 1280,
+  height: 720,
+  fps: 30,
+  durationInFrames: 90,
+  defaultProps: { title: "Milyonus" },
+});
 ```
 
 ---
 
 ## Time, frames, and sequences
 
-`useCurrentFrame()` returns the frame relative to the nearest `<Sequence>`, not the absolute frame of the film. That is the entire point of a sequence. A title that springs in over 20 frames should spring in over 20 frames whether it starts at 0 or at 240.
-
-```tsx
-<Sequence from={30} durationInFrames={60}>
-  <Bar />
-</Sequence>
-```
-
-- `from` defaults to `0`. It is relative to the parent context.
-- `durationInFrames` defaults to `Infinity`, which means "until the parent ends."
-- Outside the window, children unmount. They do not render at opacity 0. They are absent.
-- Inside the window, children see `frame` starting at 0.
-- Nested sequences add up. A sequence at `from={10}` inside a sequence at `from={30}` begins at absolute frame 40.
-
-`<Sequence>` must sit under `<Player>` or `<FrameRenderer>`. Both inject `FrameContext`. Using the hooks outside that tree throws.
-
-`useVideoConfig()` returns the composition config, not the sequence window: `width`, `height`, `fps`, `durationInFrames`. Use it for layout that must know the stage, and for springs that must know the frame rate.
+- `useCurrentFrame()` returns the integer frame relative to the nearest `<Sequence>`.
+- `useAbsoluteFrame()` returns the integer frame from root frame `0`.
+- `useVideoConfig()` returns `{ width, height, fps, durationInFrames }`.
+- `<Sequence from={30} durationInFrames={60} name="Bar">` unmounts children outside `[30, 90)` and shifts local `frame` to `0`. Pass `layout="none"` to omit the default absolute-fill wrapper.
 
 ---
 
-## Motion primitives
+## Motion primitives & seeded randomness
 
-### interpolate
-
-Piecewise linear map from an input range to an output range. Ranges must be the same length. `inputRange` must be strictly increasing. Fewer than two stops is an error.
-
-```ts
-interpolate(
-  input,
-  inputRange,
-  outputRange,
-  {
-    easing = Easings.linear,
-    extrapolateLeft = "extend",
-    extrapolateRight = "extend",
-  }
-)
-```
-
-Easing is applied only while the local `t` is inside `[0, 1]`. Outside a segment, the value extends or clamps.
+### `interpolate`
 
 ```ts
 const opacity = interpolate(frame, [0, 15], [0, 1], { extrapolateRight: "clamp" });
@@ -324,186 +249,144 @@ const width = interpolate(frame, [0, 60], [0, stageWidth], {
 });
 ```
 
-Built-in easings:
+Built-in easings: `Easings.linear`, `Easings.easeIn`, `Easings.easeOut`, `Easings.easeInOut`, or any `(t: number) => number`.
 
-| Name | Curve |
-|---|---|
-| `Easings.linear` | `t` |
-| `Easings.easeIn` | cubic in, `t³` |
-| `Easings.easeOut` | cubic out |
-| `Easings.easeInOut` | cubic in-out |
-
-Bring your own easing. The type is `(t: number) => number`.
-
-Default extrapolation is `extend`, not `clamp`. If you do not want a value to run past the last keyframe, say so. This is the sharp edge. It is also the honest one.
-
-### spring
-
-A deterministic damped spring, integrated with fixed substeps so frame `n` does not depend on how you arrived there.
+### `spring`
 
 ```ts
-spring({
-  frame,
-  fps,
-  from = 0,
-  to = 1,
-  config = {},
-})
+const scale = spring({ frame, fps, from: 0, to: 1, config: { stiffness: 100, damping: 12, mass: 1 } });
 ```
 
-Defaults: `stiffness: 100`, `damping: 10`, `mass: 1`. The integrator takes 8 substeps per frame. `frame <= 0` returns `from`. The simulation always eases a normalized mass-spring from 0 toward 1, then maps that into `[from, to]`.
+Integrated with 8 fixed sub-steps per frame so scrubbing and parallel chunk rendering are always identical.
+
+### `random`, `randomRange`, `randomInt`, `createRandom`
+
+Never call `Math.random()` in a composition. Use deterministic seeded helpers:
 
 ```ts
-const scale = spring({ frame, fps, config: { damping: 12 } });
+const x = randomRange(`star-x-${index}`, 0, width);
+const count = randomInt("burst-count", 4, 12);
+const u = random(frame);
 ```
-
-Do not drive a spring from `Date.now()`. Drive it from the frame. That is what makes a scrubber and a renderer agree.
 
 ---
 
-## The player
+## Transitions, captions, and audio
 
-`<Player>` is an embeddable preview, not a video tag.
+### Transitions
 
-| Prop | Meaning |
-|---|---|
-| `component` | The composition |
-| `inputProps` | Props forwarded to the composition |
-| `width`, `height`, `fps`, `durationInFrames` | The film |
-| `previewWidth` | CSS width of the preview. Default `640`. Height follows aspect ratio. |
-| `loop` | Default `true` |
-| `autoPlay` | Default `true` |
+Pure `interpolate`-driven style functions (`fadeIn`, `fadeOut`, `fadeInOut`, `slideIn`, `slideOut`, `scaleIn`, `wipeIn`) plus `<Transition>`:
 
-The stage is rendered at full composition resolution and scaled with `transform: scale(...)` from the top left, so a 1280×720 film previewed at 800 CSS pixels is still laid out as 1280×720. Text does not reflow between preview and render.
+```tsx
+<Sequence name="Card" from={20} durationInFrames={50}>
+  <Transition enter="slide-up" exit="fade" enterDuration={12} exitDuration={10}>
+    <Card />
+  </Transition>
+</Sequence>
+```
 
-Scrubbing pauses playback. The clock is `performance.now()` mapped through `fps`, then floored to an integer frame. The composition itself never sees that clock.
+### Captions
+
+Frame-range subtitles with optional SRT/WebVTT parsing (`parseSrt(srtText, fps)`):
+
+```tsx
+const cues = parseSrt(srtString, 30);
+<Captions cues={cues} position="bottom" fadeFrames={4} />
+```
+
+### Audio
+
+`<Audio>` syncs an HTML5 `<audio>` element during preview and exports sequence-sliced track metadata (`startFrame`, `durationInFrames`, `trimBefore`, `trimAfter`, `playbackRate`, `loop`, and scalar or `(frame) => number` volume curves) for FFmpeg AAC muxing during render:
+
+```tsx
+<Sequence name="Voiceover" from={15} durationInFrames={75}>
+  <Audio src="/audio/narration.wav" trimBefore={0} volume={(f) => interpolate(f, [0, 10], [0, 1], { extrapolateRight: "clamp" })} />
+</Sequence>
+```
+
+---
+
+## Player and Studio
+
+- **`<Player>`**: Lightweight embeddable preview with play/pause, `-1`/`+1` frame stepping, scrubber, mute toggle, and timecode readout.
+- **`<Studio>`**: Full browser workspace featuring a composition list, responsive stage, keyboard shortcuts (`Space`, `ArrowLeft`, `ArrowRight`), live prop form + JSON editor, one-click CLI command copy, and an interactive sequence/audio timeline.
 
 ---
 
 ## The render contract
 
-`<FrameRenderer>` is the page the CLI knows how to drive.
+`<FrameRenderer>` mounts `#milyonus-stage` at 1:1 composition resolution with zero page margin, awaits `document.fonts.ready` + two animation frames per update, and exposes:
 
-On mount it sets:
-
-- `window.milyonusSetFrame(n)` — a function that sets the frame and resolves after two animation frames, so React has committed and the browser has painted
 - `window.milyonusReady = true`
-
-The stage element is `#milyonus-stage`, sized to `width` × `height` with no preview scale. The CLI screenshots that node, not the viewport. Device scale factor is 1.
-
-If you build your own entry, keep those two names and that id. The CLI will not guess.
+- `window.milyonusSetFrame(n)`
+- `window.milyonusSetInputProps(props)`
+- `window.milyonusGetConfig()` / `window.milyonusListCompositions()` / `window.milyonusSelectComposition(id)`
+- `window.milyonusGetAudioTracks()` / `window.milyonusGetSequences()`
 
 ---
 
-## CLI reference
+## CLI & programmatic reference
 
-Binary: `milyonus`, provided by `@milyonus/cli`.
+Binary: `milyonus` (`@milyonus/cli`). Width, height, fps, and duration are automatically discovered from the composition unless overridden.
 
-```text
+```bash
+# Render MP4 (auto-starting Vite with 4 parallel tabs and JSON props)
 milyonus render \
-  --url    <render-page-url>     default http://localhost:5173/?render=1
-  --out    <file.mp4>            default out/video.mp4
-  --width  <px>                 default 1280
-  --height <px>                 default 720
-  --fps    <n>                  default 30
-  --frames <n>                  default 90
+  --serve examples/hello-world \
+  --composition hello \
+  --props data.json \
+  --concurrency 4 \
+  --out out/hello.mp4
+
+# Capture a single PNG/JPEG/WebP still frame (no FFmpeg required)
+milyonus still \
+  --serve examples/hello-world \
+  --composition launch-card \
+  --frame 30 \
+  --out out/card.png
+
+# List compositions exposed by a project
+milyonus compositions --serve examples/hello-world
+
+# Stitch distributed MP4 chunks losslessly
+milyonus stitch --chunks part0.mp4,part1.mp4 --out out/full.mp4
+
+# Run batch job queue or HTTP render worker
+milyonus worker --queue jobs.json
+milyonus worker --port 4321
 ```
 
-Pipeline:
+Programmatic Node API from `@milyonus/cli`:
 
-1. Launch headless Chromium through Puppeteer.
-2. Set the viewport to `--width` × `--height`.
-3. Open `--url` and wait for `networkidle0`.
-4. Wait until `window.milyonusReady === true` (30 second timeout).
-5. For each frame, call `milyonusSetFrame`, then screenshot `#milyonus-stage` to `frame-000000.png` and up.
-6. Encode:
-
-```text
-ffmpeg -y -framerate <fps> -i frame-%06d.png -c:v libx264 -pix_fmt yuv420p <out>
+```ts
+import { renderMedia, renderStill, listCompositions, stitchMediaChunks, startWorkerServer } from "@milyonus/cli";
 ```
 
-7. Delete the temporary frame directory.
+---
 
-Progress prints every 10 frames. A missing stage, a missing FFmpeg, or a non-zero encoder exit fails the process.
+## Parallel, chunked, and cloud rendering
 
-The dev server must already be running. Motionedit 1.0 does not bundle or spawn Vite for you. That split is deliberate: preview and capture stay ordinary web pages.
+- **Single-machine parallelism**: `--concurrency <n>` partitions frames across `n` headless Chromium pages and encodes in one pass.
+- **Multi-worker chunking**: `--from-frame` and `--to-frame` render exact slices on separate machines; `milyonus stitch` concatenates them with `ffmpeg -f concat -c copy`.
+- **Queue worker**: `milyonus worker` provides both batch JSON execution and an HTTP job queue (`POST /jobs`, `GET /jobs/:id`, `GET /health`). Full Docker and distributed recipes live in [docs/cloud-rendering.md](docs/cloud-rendering.md).
 
 ---
 
 ## Determinism
 
-A frame is a pure input. Treat it that way.
+Allowed inside compositions: `useCurrentFrame()`, `useAbsoluteFrame()`, `useVideoConfig()`, `interpolate`, `spring`, `random` / `randomRange` / `randomInt`, and props.
 
-Allowed:
-
-- `useCurrentFrame()`
-- `useVideoConfig()`
-- `interpolate` and `spring`
-- props
-- anything derived from the above
-
-Not allowed inside a composition, if you want preview and MP4 to match:
-
-- `Date.now()`, `performance.now()`, `Math.random()` without a frame-derived seed
-- reading layout that depends on viewport scroll
-- animations driven by CSS `@keyframes` or `transition` (they run on a different clock than the frame)
-- network requests whose result can change between frames
-
-CSS transforms, opacity, and inline styles keyed off the frame are the intended look. The renderer does not freeze CSS animations. It photographs whatever is on the stage after React commits.
-
----
-
-## Parameterized films
-
-`<Player>` and `<FrameRenderer>` accept `inputProps` and spread them onto the composition. The hello-world title is already a prop (`title`, default `"Milyonus"`). A batch is a loop you write: same component, different props, different `--out`.
-
-The CLI does not yet take a JSON props file. Pass props through the page, or read query parameters in your entry and forward them. The runtime will not stop you. The convenience flag is future work.
-
-This is the practical reason to prefer code over a timeline. One composition, many cuts, no duplicated project files.
+Avoid inside compositions: `Date.now()`, `performance.now()`, unseeded `Math.random()`, CSS `@keyframes` / `transition`, and uncached network mutations.
 
 ---
 
 ## Design rules
 
-These are the rules the code already follows. New work should follow them too.
-
-1. **Same frame in, same pixels out.** If a function needs memory of previous frames, it must recompute that memory from frame 0 to `n` inside the call, the way `spring` does.
-2. **Time is an integer.** Sub-frame rendering is not a feature. Easing happens inside the mapping, not between painted frames.
-3. **Sequences own local time.** Children should not subtract `from` themselves.
-4. **Preview scale is a transform, not a layout.** The composition always lays out at `width` × `height`.
-5. **The CLI is a camera, not a runtime.** It does not evaluate React. It drives a page that does.
-6. **No hidden project format.** If it matters, it is a TypeScript value.
-
----
-
-## What is deliberately missing
-
-Honesty keeps this document useful.
-
-- No audio track, no waveform, no `<Audio>`.
-- No caption or subtitle component.
-- No transition primitives beyond what you build with `Sequence` and `interpolate`.
-- No parallel rendering and no chunk stitch. Frames are captured in one Chromium, in order.
-- No studio UI. The scrubber is the editor.
-- No cloud renderer, no Lambda recipe, no render queue.
-- No automatic discovery of compositions. You point the CLI at a URL and a frame count.
-- No still-image (`png`) command separate from the frame dump the encoder already produces.
-
-If you need one of those, the extension point is visible: another driver of `FrameContext`, or another flag on the CLI. Do not fork the core to add a feature that is a driver.
-
----
-
-## Roadmap
-
-- Audio tracks that are sliced by sequence time and muxed by FFmpeg
-- A caption component driven by frame ranges, not by a video element's text track
-- A small transition set built only from `interpolate`
-- Parallel frame ranges and a stitch step
-- A studio shell: composition list, prop editor, timeline derived from sequences
-- A props file on the CLI (`--props data.json`)
-- Documented cloud rendering on a single VM, then on a queue
-
-None of these are promised for a date. The 1.0 contract above is the part you can build against now.
+1. **Same frame in, same pixels out.** Functions with memory (like `spring`) recompute deterministically from frame `0` to `n`.
+2. **Time is an integer.** Easing lives inside value mappings, never on an external wall clock.
+3. **Sequences own local time.** Children read zero-based local frames without manual offset math.
+4. **Preview scale is a CSS transform, never a reflow.** Layout always runs at `width` × `height`.
+5. **`@milyonus/core` stays dependency-free.** Drivers live in `@milyonus/player` and `@milyonus/cli`.
 
 ---
 
@@ -512,23 +395,19 @@ None of these are promised for a date. The 1.0 contract above is the part you ca
 Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ```bash
-npm install
+npm ci
 npm run build
 npm run typecheck
 npm test
 ```
 
-CI on push and pull request runs that same chain on Node 20. A change to `interpolate` or `spring` needs a test in `packages/core/test`. A change to the render contract needs a matching change in this document, because the contract is the product.
-
-Agent notes, if you are automating work in this repo, live in [AGENTS.md](AGENTS.md).
+Agent notes live in [AGENTS.md](AGENTS.md).
 
 ---
 
 ## License and attribution
 
 [MIT](LICENSE). Copyright (c) 2026 Milyonus contributors.
-
-You may use, modify, and ship Motionedit in commercial work. Keep the copyright notice.
 
 Remotion is an inspiration for the idea that a video can be a React function of a frame, and for the shape of a monorepo that separates core, player, and renderer. Remotion is a separate project, under its own license, by its own authors. Motionedit does not include Remotion code. Do not describe a Motionedit render as a Remotion render.
 

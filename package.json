@@ -4,17 +4,29 @@
   "version": "0.1.0",
   "description": "Make videos programmatically with React. MIT licensed.",
   "license": "MIT",
-  "workspaces": ["packages/*", "examples/*"],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ayazelrico/Milyonus-Motionedit-1.0.git"
+  },
+  "homepage": "https://www.milyonus.com",
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
   "scripts": {
-    "build": "npm run build -w @milyonus/core && npm run build -w @milyonus/player && npm run build -w @milyonus/cli",
+    "build": "npm run build -w @milyonus/core && npm run build -w @milyonus/player && npm run build -w @milyonus/cli && npm run build -w hello-world",
     "dev": "npm run dev -w hello-world",
-    "typecheck": "tsc -p packages/core --noEmit && tsc -p packages/player --noEmit && tsc -p packages/cli --noEmit",
-    "test": "npm test -w @milyonus/core",
-    "render": "npm run render -w hello-world"
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p packages/player --noEmit && tsc -p packages/cli --noEmit && tsc -p examples/hello-world --noEmit",
+    "test": "npm test -w @milyonus/core && npm test -w @milyonus/player && npm test -w @milyonus/cli",
+    "render": "npm run render -w hello-world",
+    "still": "npm run still -w hello-world"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0",
     "@types/react": "^18.3.0",
-    "@types/node": "^20.0.0"
+    "typescript": "^5.5.0"
   }
 }

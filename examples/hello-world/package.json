@@ -5,12 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "render": "milyonus render --url http://localhost:5173/?render=1 --out out/hello.mp4 --width 1280 --height 720 --fps 30 --frames 90"
+    "build": "vite build",
+    "typecheck": "tsc -p . --noEmit",
+    "render": "milyonus render --serve . --composition hello --out out/hello.mp4 --concurrency 2",
+    "still": "milyonus still --serve . --composition hello --frame 45 --out out/hello.png"
   },
   "dependencies": {
-    "@milyonus/core": "*",
-    "@milyonus/player": "*",
-    "@milyonus/cli": "*",
+    "@milyonus/core": "^0.1.0",
+    "@milyonus/player": "^0.1.0",
+    "@milyonus/cli": "^0.1.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0"
   },

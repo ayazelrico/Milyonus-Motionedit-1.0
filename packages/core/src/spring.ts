@@ -1,5 +1,7 @@
+/** Physical parameters for a damped harmonic spring oscillator. */
 export type SpringConfig = { stiffness: number; damping: number; mass: number };
 
+/** Default spring parameters (`stiffness: 100`, `damping: 10`, `mass: 1`). */
 export const defaultSpring: SpringConfig = { stiffness: 100, damping: 10, mass: 1 };
 
 /**
@@ -19,8 +21,10 @@ export const spring = ({
   to?: number;
   config?: Partial<SpringConfig>;
 }): number => {
+  if (fps <= 0) throw new Error("fps must be positive.");
   if (frame <= 0) return from;
   const { stiffness, damping, mass } = { ...defaultSpring, ...config };
+  if (mass <= 0) throw new Error("spring mass must be positive.");
   const sub = 8;
   const dt = 1 / fps / sub;
   let x = 0;

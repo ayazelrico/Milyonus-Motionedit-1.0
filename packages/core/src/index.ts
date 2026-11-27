@@ -17,10 +17,20 @@ export type {
   ResolvedAudioTrack,
   InspectorAPI,
 } from "./context.js";
+export { AbsoluteFill } from "./AbsoluteFill.js";
+export type { AbsoluteFillProps } from "./AbsoluteFill.js";
 export { Sequence } from "./Sequence.js";
 export type { SequenceProps } from "./Sequence.js";
-export { interpolate, Easings } from "./interpolate.js";
+export { Series } from "./Series.js";
+export type { SeriesProps, SeriesSequenceProps } from "./Series.js";
+export { Loop } from "./Loop.js";
+export type { LoopProps } from "./Loop.js";
+export { Freeze } from "./Freeze.js";
+export type { FreezeProps } from "./Freeze.js";
+export { interpolate, bezier, Easings } from "./interpolate.js";
 export type { Easing, InterpolateOptions } from "./interpolate.js";
+export { interpolateColors, parseColor } from "./colors.js";
+export type { RgbaColor } from "./colors.js";
 export { spring, defaultSpring } from "./spring.js";
 export type { SpringConfig } from "./spring.js";
 export { random, randomRange, randomInt, createRandom } from "./random.js";
@@ -45,5 +55,15 @@ export {
 export type { CaptionCue, CaptionsProps } from "./Captions.js";
 export { Audio } from "./Audio.js";
 export type { AudioProps } from "./Audio.js";
+export { Img, Video } from "./Media.js";
+export type { ImgProps, VideoProps } from "./Media.js";
+export {
+  delayRender,
+  continueRender,
+  cancelRender,
+  waitForDelayRenders,
+  getPendingDelayRenders,
+  resetDelayRenders,
+} from "./delayRender.js";
 export { defineComposition } from "./Composition.js";
 export type { CompositionDefinition, CompositionSummary } from "./Composition.js";

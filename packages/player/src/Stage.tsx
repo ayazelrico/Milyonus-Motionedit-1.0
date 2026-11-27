@@ -23,6 +23,8 @@ export type StageProps = {
   playback?: PlaybackState;
   /** Optional timeline/audio inspector callbacks. */
   inspector?: InspectorAPI | null;
+  /** Omit opaque white stage background so alpha-channel exports preserve transparency. Defaults to `false`. */
+  transparent?: boolean;
 };
 
 const defaultPlayback: PlaybackState = {
@@ -40,6 +42,7 @@ export const Stage: React.FC<StageProps> = ({
   scale = 1,
   playback = defaultPlayback,
   inspector = null,
+  transparent = false,
 }) => (
   <div
     style={{
@@ -58,7 +61,7 @@ export const Stage: React.FC<StageProps> = ({
         transformOrigin: "top left",
         position: "relative",
         display: "flex",
-        background: "#fff",
+        background: transparent ? "transparent" : "#fff",
         boxSizing: "border-box",
       }}
     >

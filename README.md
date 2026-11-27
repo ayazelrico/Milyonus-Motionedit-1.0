@@ -78,12 +78,12 @@ A composition is a function. Its only clock is an integer. Width, height, frame 
 
 | Surface | Package | What it provides |
 |---|---|---|
-| Core runtime | `@milyonus/core` | `FrameContext`, `Sequence`, `interpolate`, `spring`, `random`, `Transition`, `Captions`, `Audio`, `defineComposition` (zero runtime dependencies) |
-| Embeddable preview | `@milyonus/player` | `<Player>` with play/pause, frame-stepping, mute toggle, timecode, and scrubber |
-| Interactive workspace | `@milyonus/player` | `<Studio>` with composition switcher, live prop controls + JSON editor, CLI command generator, and sequence/audio timeline |
-| Capture driver | `@milyonus/player` | `<FrameRenderer>` exposing `window.milyonusSetFrame`, prop injection, composition discovery, and audio/sequence inspection |
-| Renderer & Worker CLI | `@milyonus/cli` | `milyonus render` (parallel tabs, audio muxing, `--serve`, `--props`), `still`, `compositions`, `stitch`, and `worker` (batch + HTTP queue) |
-| Example | `examples/hello-world` | Multi-composition Vite workspace (`hello` 1280×720 + `launch-card` 1080×1080) |
+| Core runtime | `@milyonus/core` | `FrameContext`, `AbsoluteFill`, `Sequence`, `Series`, `Loop`, `Freeze`, `interpolate`, `Easings.bezier`, `interpolateColors`, `spring`, `random`, `Transition`, `Captions`, `Audio`, `Img`, `Video`, `delayRender`, `defineComposition` (zero runtime dependencies) |
+| Embeddable preview | `@milyonus/player` | `<Player>` with play/pause, frame-stepping, playback speed (`0.25x..2x`), mute toggle, timecode, and scrubber |
+| Interactive workspace | `@milyonus/player` | `<Studio>` with composition switcher, zoom & alpha checkerboard grid, live prop controls + JSON editor, CLI command generator, and sequence/audio timeline ruler |
+| Capture driver | `@milyonus/player` | `<FrameRenderer>` exposing `window.milyonusSetFrame`, `delayRender` asset gating, alpha transparency, prop injection, composition discovery, and audio/sequence inspection |
+| Renderer & Worker CLI | `@milyonus/cli` | `milyonus init`, `render` (`h264`, alpha `vp9` WebM, `prores` MOV, `gif`, parallel browsers, audio muxing, `--serve`, `--props`), `still`, `compositions`, `stitch`, and `worker` |
+| Examples | `examples/*` | `hello-world` (intro, launch card, alpha sticker) & `data-explainer` (1080p KPI bar-chart film) |
 
 ---
 
@@ -97,8 +97,9 @@ A composition is a function. Its only clock is an integer. Width, height, frame 
                             │
 ┌───────────────────────────▼───────────────────────────────┐
 │  @milyonus/core  (dependency-free; React peer only)       │
-│  FrameContext · Sequence · interpolate · spring · random  │
-│  Transition · Captions · Audio · defineComposition        │
+│  FrameContext · AbsoluteFill · Sequence · Series · Loop   │
+│  Freeze · interpolate · bezier · interpolateColors        │
+│  spring · random · Transition · Captions · Audio · Img    │
 └──────────┬───────────────────────┬────────────────────────┘
            │                       │
 ┌──────────▼──────────┐  ┌─────────▼───────────┐
@@ -110,8 +111,8 @@ A composition is a function. Its only clock is an integer. Width, height, frame 
                          ┌─────────▼───────────┐
                          │  @milyonus/cli      │
                          │  Parallel Chromium  │
-                         │  FFmpeg H.264 + AAC │
-                         │  Still · Stitch ·   │
+                         │  MP4 · WebM · MOV   │
+                         │  GIF · Still · Init │
                          │  Queue Worker       │
                          └─────────────────────┘
 ```
@@ -124,15 +125,16 @@ See [DESIGN.md](DESIGN.md), [docs/architecture.md](docs/architecture.md), [docs/
 
 ```text
 Milyonus-Motionedit-1.0
-├── packages/core          @milyonus/core
-├── packages/player        @milyonus/player  (Player, Studio, FrameRenderer, Stage)
-├── packages/cli           @milyonus/cli     (bin: milyonus + Node API)
-├── examples/hello-world   Multi-composition Studio, Player, and Render target
-├── docs                   concepts, architecture, and cloud rendering guides
-├── .github/workflows      CI: npm ci, build, typecheck, unit + E2E tests
+├── packages/core            @milyonus/core
+├── packages/player          @milyonus/player  (Player, Studio, FrameRenderer, Stage)
+├── packages/cli             @milyonus/cli     (bin: milyonus + Node API)
+├── examples/hello-world     Multi-composition Studio, Player, and Render target
+├── examples/data-explainer  1080p data-driven KPI bar-chart film
+├── docs                     concepts, architecture, and cloud rendering guides
+├── .github/workflows        CI: Node 20 & 22 matrix, build, typecheck, unit + E2E tests
 ├── DESIGN.md
 ├── CONTRIBUTING.md
-└── LICENSE                MIT
+└── LICENSE                  MIT
 ```
 
 ---
@@ -230,26 +232,32 @@ export const helloComposition = defineComposition({
 
 ## Time, frames, and sequences
 
-- `useCurrentFrame()` returns the integer frame relative to the nearest `<Sequence>`.
+- `useCurrentFrame()` returns the integer frame relative to the nearest `<Sequence>`, `<Series.Sequence>`, `<Loop>`, or `<Freeze>`.
 - `useAbsoluteFrame()` returns the integer frame from root frame `0`.
 - `useVideoConfig()` returns `{ width, height, fps, durationInFrames }`.
-- `<Sequence from={30} durationInFrames={60} name="Bar">` unmounts children outside `[30, 90)` and shifts local `frame` to `0`. Pass `layout="none"` to omit the default absolute-fill wrapper.
+- `<AbsoluteFill>` stacks full-stage flex layers cleanly without boilerplate inline styles.
+- `<Sequence from={30} durationInFrames={60} name="Bar">` unmounts children outside `[30, 90)` and shifts local `frame` to `0`.
+- `<Series>` & `<Series.Sequence durationInFrames={45} offset={-5}>` chain sequential scenes automatically (supporting negative `offset` overlaps).
+- `<Loop durationInFrames={30} times={4}>` repeats cyclic animations deterministically (`frame % 30`).
+- `<Freeze frame={45} active={(f) => f >= 45}>` holds local frame time for callouts and end cards.
 
 ---
 
 ## Motion primitives & seeded randomness
 
-### `interpolate`
+### `interpolate`, `Easings.bezier`, & `interpolateColors`
 
 ```ts
 const opacity = interpolate(frame, [0, 15], [0, 1], { extrapolateRight: "clamp" });
-const width = interpolate(frame, [0, 60], [0, stageWidth], {
-  easing: Easings.easeOut,
+const progress = interpolate(frame, [0, 30], [0, 1], {
+  easing: Easings.bezier(0.16, 1, 0.3, 1),
+  extrapolateLeft: "clamp",
   extrapolateRight: "clamp",
 });
+const bg = interpolateColors(frame, [0, 45, 90], ["#071233", "#1e4fd8", "#35c6f4"]);
 ```
 
-Built-in easings: `Easings.linear`, `Easings.easeIn`, `Easings.easeOut`, `Easings.easeInOut`, or any `(t: number) => number`.
+Built-in easings: `linear`, `quadIn`, `quadOut`, `quadInOut`, `easeIn`, `easeOut`, `easeInOut`, `expoOut`, `backOut`, `Easings.bezier(x1, y1, x2, y2)`, or any `(t: number) => number`.
 
 ### `spring`
 
@@ -294,32 +302,29 @@ const cues = parseSrt(srtString, 30);
 <Captions cues={cues} position="bottom" fadeFrames={4} />
 ```
 
-### Audio
+### Media & Async Readiness (`<Audio>`, `<Img>`, `<Video>`, `delayRender`)
 
-`<Audio>` syncs an HTML5 `<audio>` element during preview and exports sequence-sliced track metadata (`startFrame`, `durationInFrames`, `trimBefore`, `trimAfter`, `playbackRate`, `loop`, and scalar or `(frame) => number` volume curves) for FFmpeg AAC muxing during render:
-
-```tsx
-<Sequence name="Voiceover" from={15} durationInFrames={75}>
-  <Audio src="/audio/narration.wav" trimBefore={0} volume={(f) => interpolate(f, [0, 10], [0, 1], { extrapolateRight: "clamp" })} />
-</Sequence>
-```
+- **`<Audio>`** syncs HTML5 audio during preview and exports sequence-sliced track metadata (`startFrame`, `durationInFrames`, `trimBefore`, `trimAfter`, `playbackRate`, `loop`, and scalar or `(frame) => number` volume curves) for FFmpeg AAC/Opus muxing during render.
+- **`<Img>`** and **`<Video>`** automatically gate `<FrameRenderer>` via `delayRender` / `continueRender` until image decoding or exact video frame seeking finishes—preventing half-loaded screenshots.
+- Custom async loaders can call `const handle = delayRender("fetch-fonts")` and `continueRender(handle)` directly.
 
 ---
 
 ## Player and Studio
 
-- **`<Player>`**: Lightweight embeddable preview with play/pause, `-1`/`+1` frame stepping, scrubber, mute toggle, and timecode readout.
-- **`<Studio>`**: Full browser workspace featuring a composition list, responsive stage, keyboard shortcuts (`Space`, `ArrowLeft`, `ArrowRight`), live prop form + JSON editor, one-click CLI command copy, and an interactive sequence/audio timeline.
+- **`<Player>`**: Lightweight embeddable preview with play/pause, `-1`/`+1` frame stepping, playback speed (`0.25x..2x`), scrubber, mute toggle, and timecode readout.
+- **`<Studio>`**: Full browser workspace featuring a composition list, zoom modes (`Fit`, `50%`, `75%`, `100%`), alpha checkerboard toggle, keyboard shortcuts (`Space`, `K`, `ArrowLeft`/`ArrowRight`, `Home`/`End`), live prop form + JSON editor, one-click CLI command copy, and an interactive sequence/audio timeline ruler.
 
 ---
 
 ## The render contract
 
-`<FrameRenderer>` mounts `#milyonus-stage` at 1:1 composition resolution with zero page margin, awaits `document.fonts.ready` + two animation frames per update, and exposes:
+`<FrameRenderer>` mounts `#milyonus-stage` at 1:1 composition resolution with zero page margin, awaits `document.fonts.ready` + all pending `delayRender` handles + animation frames per update, and exposes:
 
 - `window.milyonusReady = true`
 - `window.milyonusSetFrame(n)`
 - `window.milyonusSetInputProps(props)`
+- `window.milyonusSetTransparent(transparent)`
 - `window.milyonusGetConfig()` / `window.milyonusListCompositions()` / `window.milyonusSelectComposition(id)`
 - `window.milyonusGetAudioTracks()` / `window.milyonusGetSequences()`
 
@@ -327,16 +332,23 @@ const cues = parseSrt(srtString, 30);
 
 ## CLI & programmatic reference
 
-Binary: `milyonus` (`@milyonus/cli`). Width, height, fps, and duration are automatically discovered from the composition unless overridden.
+Binary: `milyonus` (`@milyonus/cli`). Width, height, fps, duration, and output codec are automatically inferred unless overridden.
 
 ```bash
-# Render MP4 (auto-starting Vite with 4 parallel tabs and JSON props)
+# Scaffold a brand-new Motionedit + Vite + TypeScript project
+milyonus init my-film
+
+# Render H.264 MP4 (auto-starting Vite with 4 parallel browsers and JSON props)
 milyonus render \
   --serve examples/hello-world \
   --composition hello \
   --props data.json \
   --concurrency 4 \
   --out out/hello.mp4
+
+# Render alpha-transparent VP9 WebM, Apple ProRes 4444 MOV, or animated GIF
+milyonus render --serve examples/hello-world --composition sticker-badge --transparent --out out/sticker.webm
+milyonus render --serve examples/hello-world --composition sticker-badge --transparent --out out/sticker.gif
 
 # Capture a single PNG/JPEG/WebP still frame (no FFmpeg required)
 milyonus still \
@@ -359,7 +371,14 @@ milyonus worker --port 4321
 Programmatic Node API from `@milyonus/cli`:
 
 ```ts
-import { renderMedia, renderStill, listCompositions, stitchMediaChunks, startWorkerServer } from "@milyonus/cli";
+import {
+  scaffoldProject,
+  renderMedia,
+  renderStill,
+  listCompositions,
+  stitchMediaChunks,
+  startWorkerServer,
+} from "@milyonus/cli";
 ```
 
 ---

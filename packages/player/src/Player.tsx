@@ -19,6 +19,10 @@ export type PlayerProps = VideoConfig & {
   initialFrame?: number;
   /** Show transport controls below the stage. Defaults to `true`. */
   controls?: boolean;
+  /** Initial preview playback speed multiplier. Defaults to `1`. */
+  playbackRate?: number;
+  /** Render stage with transparent background. Defaults to `false`. */
+  transparent?: boolean;
 };
 
 const formatSeconds = (frame: number, fps: number): string => {
@@ -28,7 +32,7 @@ const formatSeconds = (frame: number, fps: number): string => {
   return `${String(mins).padStart(2, "0")}:${secs}`;
 };
 
-/** Embeddable preview player with play/pause, frame stepping, mute toggle, and scrubber. */
+/** Embeddable preview player with play/pause, frame stepping, playback speed, mute toggle, and scrubber. */
 export const Player: React.FC<PlayerProps> = ({
   component,
   inputProps,
@@ -38,21 +42,25 @@ export const Player: React.FC<PlayerProps> = ({
   muted: initialMuted = false,
   initialFrame = 0,
   controls = true,
+  playbackRate: initialRate = 1,
+  transparent = false,
   ...config
 }) => {
   const maxFrame = Math.max(0, config.durationInFrames - 1);
   const [frame, setFrame] = useState(() => Math.min(maxFrame, Math.max(0, Math.floor(initialFrame))));
   const [playing, setPlaying] = useState(autoPlay);
   const [muted, setMuted] = useState(initialMuted);
+  const [speed, setSpeed] = useState(initialRate > 0 ? initialRate : 1);
   const frameRef = useRef(frame);
   frameRef.current = frame;
 
   useEffect(() => {
     if (!playing) return;
-    let origin = performance.now() - (frameRef.current / config.fps) * 1000;
+    const effectiveFps = config.fps * speed;
+    let origin = performance.now() - (frameRef.current / effectiveFps) * 1000;
     let raf = 0;
     const tick = (now: number) => {
-      let f = Math.floor(((now - origin) / 1000) * config.fps);
+      let f = Math.floor(((now - origin) / 1000) * effectiveFps);
       if (f >= config.durationInFrames) {
         if (loop) {
           origin = now;
@@ -68,7 +76,7 @@ export const Player: React.FC<PlayerProps> = ({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, loop, config.fps, config.durationInFrames, maxFrame]);
+  }, [playing, loop, config.fps, config.durationInFrames, maxFrame, speed]);
 
   const playback = useMemo(() => ({ playing, muted, renderMode: false }), [playing, muted]);
 
@@ -81,6 +89,7 @@ export const Player: React.FC<PlayerProps> = ({
         props={inputProps}
         scale={previewWidth / config.width}
         playback={playback}
+        transparent={transparent}
       />
       {controls ? (
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
@@ -124,6 +133,17 @@ export const Player: React.FC<PlayerProps> = ({
             }}
             style={{ flex: 1 }}
           />
+          <select
+            aria-label="Playback speed"
+            value={speed}
+            onChange={(e) => setSpeed(Number(e.target.value))}
+          >
+            <option value={0.25}>0.25x</option>
+            <option value={0.5}>0.5x</option>
+            <option value={1}>1x</option>
+            <option value={1.5}>1.5x</option>
+            <option value={2}>2x</option>
+          </select>
           <button type="button" onClick={() => setMuted((m) => !m)}>
             {muted ? "Unmute" : "Mute"}
           </button>

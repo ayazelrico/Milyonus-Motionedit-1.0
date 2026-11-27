@@ -3,26 +3,40 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  AbsoluteFill,
   Audio,
   Captions,
   Easings,
   FrameProvider,
+  Freeze,
+  Img,
   InspectorContext,
+  Loop,
   PlaybackContext,
   Sequence,
+  Series,
   Transition,
+  Video,
+  bezier,
+  cancelRender,
+  continueRender,
   createRandom,
   defineComposition,
+  delayRender,
   fadeIn,
   fadeInOut,
   fadeOut,
   framesToSeconds,
   getActiveCaptions,
+  getPendingDelayRenders,
   interpolate,
+  interpolateColors,
+  parseColor,
   parseSrt,
   random,
   randomInt,
   randomRange,
+  resetDelayRenders,
   scaleIn,
   secondsToFrames,
   slideIn,
@@ -31,6 +45,7 @@ import {
   useAbsoluteFrame,
   useCurrentFrame,
   useVideoConfig,
+  waitForDelayRenders,
   wipeIn,
 } from "../dist/index.js";
 
@@ -46,16 +61,40 @@ test("interpolate clamps and extends on both sides", () => {
   assert.equal(interpolate(20, [0, 10], [0, 100], { extrapolateRight: "extend" }), 200);
 });
 
-test("interpolate applies built-in and custom easings and validates ranges", () => {
+test("interpolate applies built-in, bezier, and custom easings and validates ranges", () => {
   assert.equal(Easings.linear(0.5), 0.5);
+  assert.ok(Easings.quadIn(0.5) < 0.5);
+  assert.ok(Easings.quadOut(0.5) > 0.5);
+  assert.equal(Easings.quadInOut(0.5), 0.5);
   assert.ok(Easings.easeIn(0.5) < 0.5);
   assert.ok(Easings.easeOut(0.5) > 0.5);
   assert.equal(Easings.easeInOut(0.5), 0.5);
-  assert.equal(interpolate(5, [0, 10], [0, 100], { easing: (t) => t * t }), 25);
+  assert.equal(Easings.expoOut(1), 1);
+  assert.ok(Easings.backOut(0.8) > 1);
 
+  const linearBezier = bezier(0.25, 0.25, 0.75, 0.75);
+  assert.ok(Math.abs(linearBezier(0.4) - 0.4) < 1e-4);
+  const snappy = Easings.bezier(0.16, 1, 0.3, 1);
+  assert.equal(snappy(0), 0);
+  assert.equal(snappy(1), 1);
+  assert.ok(snappy(0.3) > 0.5);
+  assert.throws(() => bezier(-0.1, 0, 1, 1), /\[0, 1\]/);
+
+  assert.equal(interpolate(5, [0, 10], [0, 100], { easing: (t) => t * t }), 25);
   assert.throws(() => interpolate(5, [0], [0]), /at least 2/);
   assert.throws(() => interpolate(5, [0, 10], [0, 50, 100]), /equal length/);
   assert.throws(() => interpolate(5, [10, 5], [0, 100]), /strictly increasing/);
+});
+
+test("parseColor and interpolateColors support hex, rgb/rgba, and hsl/hsla", () => {
+  assert.deepEqual(parseColor("#fff"), [255, 255, 255, 1]);
+  assert.deepEqual(parseColor("#ff008080")[0], 255);
+  assert.deepEqual(parseColor("rgba(10, 20, 30, 0.5)"), [10, 20, 30, 0.5]);
+  assert.deepEqual(parseColor("hsl(0, 100%, 50%)"), [255, 0, 0, 1]);
+
+  assert.equal(interpolateColors(0, [0, 10], ["#000000", "#ffffff"]), "rgba(0, 0, 0, 1)");
+  assert.equal(interpolateColors(5, [0, 10], ["#000000", "#ffffff"]), "rgba(128, 128, 128, 1)");
+  assert.equal(interpolateColors(10, [0, 10], ["#000000", "rgba(255, 255, 255, 0.5)"]), "rgba(255, 255, 255, 0.5)");
 });
 
 test("spring is deterministic, respects from/to, and validates config", () => {
@@ -129,6 +168,74 @@ test("hooks throw outside FrameProvider and Sequence shifts local frame while pr
   assert.ok(discoveredSequences.some((s) => s.name === "Inner" && s.from === 30 && s.durationInFrames === 20));
 });
 
+test("AbsoluteFill, Series, Loop, and Freeze compose frame time deterministically", () => {
+  const ReadFrame = ({ tag }) => `${tag}:${useCurrentFrame()}`;
+
+  const renderTree = (frame) =>
+    renderToStaticMarkup(
+      React.createElement(
+        FrameProvider,
+        { value: { width: 1280, height: 720, fps: 30, durationInFrames: 100, frame } },
+        React.createElement(
+          AbsoluteFill,
+          null,
+          React.createElement(
+            Series,
+            null,
+            React.createElement(
+              Series.Sequence,
+              { name: "First", durationInFrames: 20, layout: "none" },
+              React.createElement(ReadFrame, { tag: "A" })
+            ),
+            React.createElement(
+              Series.Sequence,
+              { name: "Second", durationInFrames: 20, offset: -5, layout: "none" },
+              React.createElement(ReadFrame, { tag: "B" })
+            )
+          ),
+          React.createElement(
+            Loop,
+            { durationInFrames: 10, times: 3, layout: "none" },
+            React.createElement(ReadFrame, { tag: "L" })
+          ),
+          React.createElement(
+            Freeze,
+            { frame: 7, active: (f) => f >= 10 },
+            React.createElement(ReadFrame, { tag: "F" })
+          )
+        )
+      )
+    );
+
+  assert.match(renderTree(5), /A:5L:5F:5/);
+  assert.match(renderTree(17), /A:17B:2L:7F:7/);
+  assert.match(renderTree(25), /B:10L:5F:7/);
+  // At frame 35 Loop (10*3=30) and Series (15+20=35) have both unmounted; Freeze remains at 7.
+  assert.match(renderTree(35), />F:7<\/div>$/);
+});
+
+test("delayRender, continueRender, and cancelRender coordinate async asset readiness", async () => {
+  resetDelayRenders();
+  const h1 = delayRender("font-load");
+  assert.equal(getPendingDelayRenders().length, 1);
+
+  let settled = false;
+  const waiter = waitForDelayRenders(2000).then(() => {
+    settled = true;
+  });
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(settled, false);
+
+  continueRender(h1);
+  await waiter;
+  assert.equal(settled, true);
+  assert.equal(getPendingDelayRenders().length, 0);
+
+  delayRender("broken-asset");
+  cancelRender(new Error("404 asset"));
+  await assert.rejects(() => waitForDelayRenders(500), /404 asset/);
+});
+
 test("Captions, parseSrt, and frame conversion helpers work accurately", () => {
   assert.equal(secondsToFrames(1.5, 30), 45);
   assert.equal(framesToSeconds(45, 30), 1.5);
@@ -186,7 +293,7 @@ test("transitions compute deterministic CSS styles and Transition component rend
   assert.match(html, /translate3d/);
 });
 
-test("Audio reports sequence-sliced metadata and dynamic volume samples in renderMode", () => {
+test("Audio, Img, and Video render cleanly and report sequence-sliced audio metadata", () => {
   const reported = [];
   const html = renderToStaticMarkup(
     React.createElement(
@@ -201,6 +308,8 @@ test("Audio reports sequence-sliced metadata and dynamic volume samples in rende
           React.createElement(
             Sequence,
             { from: 30, durationInFrames: 40 },
+            React.createElement(Img, { src: "https://example.com/logo.png", alt: "Logo" }),
+            React.createElement(Video, { name: "Clip", src: "/clip.mp4", trimBefore: 10 }),
             React.createElement(Audio, {
               name: "Theme",
               src: "/theme.wav",
@@ -213,14 +322,16 @@ test("Audio reports sequence-sliced metadata and dynamic volume samples in rende
     )
   );
 
+  assert.match(html, /<img[^>]+alt="Logo"/);
+  assert.match(html, /<video[^>]+src="\/clip\.mp4"/);
   assert.equal(html.includes("<audio"), false);
-  assert.equal(reported.length, 1);
-  assert.equal(reported[0].startFrame, 30);
-  assert.equal(reported[0].durationInFrames, 40);
-  assert.equal(reported[0].trimBefore, 15);
-  assert.equal(reported[0].volumeSamples.length, 40);
-  assert.equal(reported[0].volumeSamples[0], 0);
-  assert.equal(reported[0].volumeSamples[20], 0.5);
+  assert.equal(reported.length, 2);
+  const theme = reported.find((t) => t.name === "Theme");
+  assert.equal(theme.startFrame, 30);
+  assert.equal(theme.durationInFrames, 40);
+  assert.equal(theme.trimBefore, 15);
+  assert.equal(theme.volumeSamples.length, 40);
+  assert.equal(theme.volumeSamples[20], 0.5);
 
   const comp = defineComposition({
     id: "demo",

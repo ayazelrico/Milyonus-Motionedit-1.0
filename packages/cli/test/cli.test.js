@@ -16,7 +16,9 @@ import {
   parseCliArgs,
   renderMedia,
   renderStill,
+  resolveVideoCodec,
   runBatchQueue,
+  scaffoldProject,
   startWorkerServer,
   stitchMediaChunks,
 } from "../dist/index.js";
@@ -25,7 +27,7 @@ const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const exampleDir = resolve(__dirname, "../../../examples/hello-world");
 
-test("CLI argument parser and numeric validators enforce strict inputs", async () => {
+test("CLI argument parser, codec inference, scaffolder, and numeric validators work accurately", async () => {
   const parsed = parseCliArgs([
     "render",
     "--url",
@@ -40,6 +42,12 @@ test("CLI argument parser and numeric validators enforce strict inputs", async (
   assert.equal(parsed.flags.muted, true);
   assert.equal(parsed.flags.version, true);
 
+  assert.equal(resolveVideoCodec("out/film.mp4"), "h264");
+  assert.equal(resolveVideoCodec("out/overlay.webm"), "vp9");
+  assert.equal(resolveVideoCodec("out/master.mov"), "prores");
+  assert.equal(resolveVideoCodec("out/teaser.gif"), "gif");
+  assert.throws(() => resolveVideoCodec("out/film.mp4", "av1"), /Unsupported --codec/);
+
   assert.equal(getPositiveIntFlag(parsed.flags, "frames"), 45);
   assert.equal(getNonNegativeIntFlag({ frame: "0" }, "frame"), 0);
   assert.throws(() => getPositiveIntFlag({ frames: "0" }, "frames"), /positive integer/);
@@ -53,6 +61,12 @@ test("CLI argument parser and numeric validators enforce strict inputs", async (
     assert.deepEqual(await loadInputProps('{"title":"Inline"}'), { title: "Inline" });
     assert.deepEqual(await loadInputProps(propsPath), { title: "FromFile", count: 3 });
     await assert.rejects(() => loadInputProps("[1,2,3]"), /JSON object/);
+
+    const scaffoldDir = join(tmp, "starter-video");
+    const created = await scaffoldProject({ dir: scaffoldDir });
+    assert.ok(created.files.includes("src/Composition.tsx"));
+    assert.ok(created.files.includes("package.json"));
+    await assert.rejects(() => scaffoldProject({ dir: scaffoldDir }), /not empty/);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
@@ -110,7 +124,7 @@ test("buildAtempoChain and buildAudioMuxArgs construct valid FFmpeg filter graph
   }
 });
 
-test("E2E: listCompositions, renderStill, parallel renderMedia with audio muxing, stitch, and worker queue", async () => {
+test("E2E: compositions, still, parallel H.264+AAC MP4, transparent VP9 WebM, GIF, stitch, and worker queue", async () => {
   const outDir = await mkdtemp(join(tmpdir(), "milyonus-e2e-"));
   try {
     await withServedHelper(async (renderUrl) => {
@@ -118,6 +132,7 @@ test("E2E: listCompositions, renderStill, parallel renderMedia with audio muxing
       const comps = await listCompositions({ url: renderUrl });
       assert.ok(comps.some((c) => c.id === "hello" && c.width === 1280 && c.height === 720));
       assert.ok(comps.some((c) => c.id === "launch-card" && c.width === 1080 && c.height === 1080));
+      assert.ok(comps.some((c) => c.id === "sticker-badge" && c.width === 512 && c.height === 256));
 
       // 2. Capture still PNG with custom props
       const stillPath = join(outDir, "card.png");
@@ -135,7 +150,7 @@ test("E2E: listCompositions, renderStill, parallel renderMedia with audio muxing
       assert.equal(pngBytes.readUInt32BE(16), 1080);
       assert.equal(pngBytes.readUInt32BE(20), 1080);
 
-      // 3. Parallel render chunk 1 [0, 12) with audio muxed + chunk 2 [12, 24), then stitch
+      // 3. Parallel render chunk 1 [0, 10) with audio muxed + chunk 2 [10, 20), then stitch
       const chunk1 = join(outDir, "chunk1.mp4");
       const chunk2 = join(outDir, "chunk2.mp4");
       const stitched = join(outDir, "stitched.mp4");
@@ -145,12 +160,13 @@ test("E2E: listCompositions, renderStill, parallel renderMedia with audio muxing
         composition: "hello",
         props: { title: "Parallel Test", withAudio: true },
         fromFrame: 0,
-        toFrame: 12,
+        toFrame: 10,
         concurrency: 2,
         out: chunk1,
         quiet: true,
       });
-      assert.equal(res1.renderedFrames, 12);
+      assert.equal(res1.renderedFrames, 10);
+      assert.equal(res1.codec, "h264");
       assert.ok(res1.audioTracksMuxed >= 1);
 
       const { stdout: probeOut } = await execFileAsync("ffprobe", [
@@ -170,18 +186,56 @@ test("E2E: listCompositions, renderStill, parallel renderMedia with audio muxing
         url: renderUrl,
         composition: "hello",
         props: { title: "Parallel Test", withAudio: true },
-        fromFrame: 12,
-        toFrame: 24,
+        fromFrame: 10,
+        toFrame: 20,
         concurrency: 2,
         out: chunk2,
         quiet: true,
       });
 
       await stitchMediaChunks([chunk1, chunk2], stitched, true);
-      const stitchedStat = await stat(stitched);
-      assert.ok(stitchedStat.size > 1000);
+      assert.ok((await stat(stitched)).size > 1000);
 
-      // 4. Batch queue & HTTP worker queue
+      // 4. Alpha-transparent VP9 WebM and animated GIF exports
+      const webmOut = join(outDir, "sticker.webm");
+      const gifOut = join(outDir, "sticker.gif");
+      await renderMedia({
+        url: renderUrl,
+        composition: "sticker-badge",
+        fromFrame: 0,
+        toFrame: 6,
+        transparent: true,
+        out: webmOut,
+        quiet: true,
+      });
+      const { stdout: webmProbe } = await execFileAsync("ffprobe", [
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_name,width,height",
+        "-show_entries",
+        "stream_tags=alpha_mode",
+        "-of",
+        "json",
+        webmOut,
+      ]);
+      const webmStreams = JSON.parse(webmProbe).streams;
+      assert.equal(webmStreams[0].codec_name, "vp9");
+      assert.equal(webmStreams[0].tags?.alpha_mode, "1");
+
+      await renderMedia({
+        url: renderUrl,
+        composition: "sticker-badge",
+        fromFrame: 0,
+        toFrame: 6,
+        transparent: true,
+        out: gifOut,
+        quiet: true,
+      });
+      const gifBytes = await readFile(gifOut);
+      assert.equal(gifBytes.subarray(0, 6).toString("ascii"), "GIF89a");
+
+      // 5. Batch queue & HTTP worker queue
       const queueJsonPath = join(outDir, "jobs.json");
       const batchStillPath = join(outDir, "batch-still.png");
       await writeFile(

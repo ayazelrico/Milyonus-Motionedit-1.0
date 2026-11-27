@@ -17,9 +17,10 @@
     "examples/*"
   ],
   "scripts": {
-    "build": "npm run build -w @milyonus/core && npm run build -w @milyonus/player && npm run build -w @milyonus/cli && npm run build -w hello-world",
+    "build": "npm run build -w @milyonus/core && npm run build -w @milyonus/player && npm run build -w @milyonus/cli && npm run build -w hello-world && npm run build -w data-explainer",
     "dev": "npm run dev -w hello-world",
-    "typecheck": "tsc -p packages/core --noEmit && tsc -p packages/player --noEmit && tsc -p packages/cli --noEmit && tsc -p examples/hello-world --noEmit",
+    "dev:explainer": "npm run dev -w data-explainer",
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p packages/player --noEmit && tsc -p packages/cli --noEmit && tsc -p examples/hello-world --noEmit && tsc -p examples/data-explainer --noEmit",
     "test": "npm test -w @milyonus/core && npm test -w @milyonus/player && npm test -w @milyonus/cli",
     "render": "npm run render -w hello-world",
     "still": "npm run still -w hello-world"

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -8,14 +8,25 @@ import { buildAudioMuxArgs } from "./audio.js";
 import { launchHeadlessBrowser, withServedProject } from "./browser.js";
 import { loadInputProps } from "./args.js";
 
-/** Options for rendering a composition video to MP4. */
+/** Supported output video/animation codecs. */
+export type VideoCodec = "h264" | "vp9" | "prores" | "gif";
+
+/** Options for rendering a composition video/animation. */
 export type RenderMediaOptions = {
   /** URL of a running `<FrameRenderer>` page (default `http://localhost:5173/?render=1`). */
   url?: string;
   /** Optional Vite project directory to start and stop automatically instead of `--url`. */
   serve?: string;
-  /** Output `.mp4` path. Defaults to `"out/video.mp4"`. */
+  /** Output file path (`.mp4`, `.webm`, `.mov`, or `.gif`). Defaults to `"out/video.mp4"`. */
   out?: string;
+  /** Encoder codec (`"h264"`, `"vp9"`, `"prores"`, or `"gif"`). Auto-inferred from `out` extension if omitted. */
+  codec?: VideoCodec;
+  /** Constant Rate Factor (`0..51`) for `h264`/`vp9`. */
+  crf?: number;
+  /** Preserve alpha transparency (`vp9`, `prores`, `gif`, or PNG sequence). Defaults to `false`. */
+  transparent?: boolean;
+  /** Optional directory where captured `frame-000000.png` files are copied. */
+  sequenceDir?: string;
   /** Optional composition ID to select on multi-composition pages. */
   composition?: string;
   /** Inline JSON string, `.json` file path, or object passed as `inputProps`. */
@@ -32,7 +43,7 @@ export type RenderMediaOptions = {
   fromFrame?: number;
   /** Exclusive end frame for range/chunk rendering. Defaults to `frames`. */
   toFrame?: number;
-  /** Number of parallel headless tabs capturing frames concurrently. Defaults to `1`. */
+  /** Number of parallel headless browsers capturing frames concurrently. Defaults to `1`. */
   concurrency?: number;
   /** Disable audio muxing even when `<Audio>` tracks exist. Defaults to `false`. */
   muted?: boolean;
@@ -45,6 +56,7 @@ export type RenderMediaOptions = {
 /** Summary returned when `renderMedia` finishes. */
 export type RenderMediaResult = {
   out: string;
+  codec: VideoCodec;
   compositionId: string;
   width: number;
   height: number;
@@ -67,6 +79,22 @@ export type RenderStillOptions = {
   height?: number;
   format?: "png" | "jpeg" | "webp";
   quality?: number;
+  transparent?: boolean;
+};
+
+/** Infers the output codec from explicit option or file extension. */
+export const resolveVideoCodec = (outPath: string, explicit?: string): VideoCodec => {
+  if (explicit !== undefined) {
+    if (explicit === "h264" || explicit === "vp9" || explicit === "prores" || explicit === "gif") {
+      return explicit;
+    }
+    throw new Error(`Unsupported --codec="${explicit}". Supported: h264, vp9, prores, gif.`);
+  }
+  const ext = extname(outPath).toLowerCase();
+  if (ext === ".webm") return "vp9";
+  if (ext === ".mov") return "prores";
+  if (ext === ".gif") return "gif";
+  return "h264";
 };
 
 const runBinary = (bin: string, args: string[], quiet = false): Promise<void> =>
@@ -97,7 +125,8 @@ const prepareRenderPage = async (
   page: Page,
   url: string,
   composition: string | undefined,
-  inputProps: Record<string, unknown> | undefined
+  inputProps: Record<string, unknown> | undefined,
+  transparent = false
 ): Promise<CompositionSummary> => {
   await page.goto(url, { waitUntil: "networkidle0" });
   await page.waitForFunction("window.milyonusReady === true", { timeout: 30000 });
@@ -115,6 +144,13 @@ const prepareRenderPage = async (
     discovered = await page.evaluate(() => {
       const fn = (window as any).milyonusGetConfig;
       return typeof fn === "function" ? fn() : undefined;
+    });
+  }
+
+  if (transparent) {
+    await page.evaluate(async () => {
+      const fn = (window as any).milyonusSetTransparent;
+      if (typeof fn === "function") await fn(true);
     });
   }
 
@@ -188,13 +224,14 @@ export const renderStill = async (options: RenderStillOptions = {}): Promise<{
   const ext = extname(out).toLowerCase();
   const format: "png" | "jpeg" | "webp" =
     options.format ?? (ext === ".jpg" || ext === ".jpeg" ? "jpeg" : ext === ".webp" ? "webp" : "png");
+  const transparent = Boolean(options.transparent) && format !== "jpeg";
   const inputProps = await loadInputProps(options.props);
 
   await mkdir(dirname(out), { recursive: true });
   const browser = await launchHeadlessBrowser();
   try {
     const page = await browser.newPage();
-    const discovered = await prepareRenderPage(page, url, options.composition, inputProps);
+    const discovered = await prepareRenderPage(page, url, options.composition, inputProps, transparent);
     const width = options.width ?? discovered.width;
     const height = options.height ?? discovered.height;
 
@@ -206,6 +243,7 @@ export const renderStill = async (options: RenderStillOptions = {}): Promise<{
     await stage.screenshot({
       path: out as `${string}.png`,
       type: format,
+      omitBackground: transparent,
       ...(format !== "png" && options.quality !== undefined ? { quality: options.quality } : {}),
     });
 
@@ -215,7 +253,42 @@ export const renderStill = async (options: RenderStillOptions = {}): Promise<{
   }
 };
 
-/** Renders a frame range or full composition to H.264 MP4, with optional parallel workers and audio muxing. */
+const buildVideoCodecArgs = (codec: VideoCodec, transparent: boolean, crf?: number): string[] => {
+  if (codec === "vp9") {
+    return [
+      "-c:v",
+      "libvpx-vp9",
+      "-b:v",
+      "0",
+      "-crf",
+      String(crf ?? 30),
+      "-pix_fmt",
+      transparent ? "yuva420p" : "yuv420p",
+    ];
+  }
+  if (codec === "prores") {
+    return [
+      "-c:v",
+      "prores_ks",
+      "-profile:v",
+      transparent ? "4" : "3",
+      "-pix_fmt",
+      transparent ? "yuva444p10le" : "yuv422p10le",
+    ];
+  }
+  return [
+    "-c:v",
+    "libx264",
+    ...(crf !== undefined ? ["-crf", String(crf)] : []),
+    "-pix_fmt",
+    "yuv420p",
+  ];
+};
+
+/**
+ * Renders a frame range or full composition to H.264 MP4, VP9 WebM (with optional alpha),
+ * Apple ProRes MOV, or high-palette animated GIF, with parallel workers and audio muxing.
+ */
 export const renderMedia = async (options: RenderMediaOptions = {}): Promise<RenderMediaResult> => {
   if (options.serve) {
     return withServedProject(options.serve, (servedUrl) =>
@@ -227,6 +300,15 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
 
   const url = options.url ?? "http://localhost:5173/?render=1";
   const out = resolve(options.out ?? "out/video.mp4");
+  const codec = resolveVideoCodec(out, options.codec);
+  const transparent = Boolean(options.transparent);
+  if (transparent && codec === "h264") {
+    throw new Error("H.264 MP4 does not support alpha transparency. Use --codec vp9 (.webm), prores (.mov), or gif (.gif).");
+  }
+  if (options.crf !== undefined && (!Number.isInteger(options.crf) || options.crf < 0 || options.crf > 51)) {
+    throw new Error(`Invalid --crf="${options.crf}": expected an integer in [0, 51].`);
+  }
+
   const inputProps = await loadInputProps(options.props);
   const requestedConcurrency = options.concurrency ?? 1;
   if (!Number.isInteger(requestedConcurrency) || requestedConcurrency < 1) {
@@ -248,7 +330,13 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
 
     try {
       const primaryPage = await browsers[0].newPage();
-      const discovered = await prepareRenderPage(primaryPage, url, options.composition, inputProps);
+      const discovered = await prepareRenderPage(
+        primaryPage,
+        url,
+        options.composition,
+        inputProps,
+        transparent
+      );
       compositionId = discovered.id;
       width = options.width ?? discovered.width;
       height = options.height ?? discovered.height;
@@ -268,7 +356,6 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
       const renderedFrames = toFrame - fromFrame;
       const workerCount = Math.min(requestedConcurrency, renderedFrames);
 
-      // Give each parallel worker an isolated headless Browser so active-tab screenshots never contend.
       const pages: Page[] = [primaryPage];
       if (workerCount > 1) {
         const extraWorkers = await Promise.all(
@@ -276,7 +363,7 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
             const b = await launchHeadlessBrowser();
             browsers.push(b);
             const p = await b.newPage();
-            await prepareRenderPage(p, url, options.composition, inputProps);
+            await prepareRenderPage(p, url, options.composition, inputProps, transparent);
             return p;
           })
         );
@@ -303,7 +390,7 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
             await page.evaluate((n: number) => (window as any).milyonusSetFrame(n), f);
             const outputIndex = f - fromFrame;
             const file = join(tempDir, `frame-${String(outputIndex).padStart(6, "0")}.png`) as `${string}.png`;
-            await stage.screenshot({ path: file });
+            await stage.screenshot({ path: file, omitBackground: transparent });
             completed++;
             options.onProgress?.(completed, renderedFrames);
             if (!options.quiet && (completed % 10 === 0 || completed === renderedFrames)) {
@@ -311,7 +398,7 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
             }
           }
 
-          if (!options.muted) {
+          if (!options.muted && codec !== "gif") {
             const tracks = await page.evaluate(() => {
               const fn = (window as any).milyonusGetAudioTracks;
               return typeof fn === "function" ? (fn() as ResolvedAudioTrack[]) : [];
@@ -333,31 +420,65 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
       await Promise.allSettled(browsers.map((b) => b.close()));
     }
 
-    const deduplicatedTracks = options.muted ? [] : Array.from(collectedAudio.values());
-    const audioPlan = await buildAudioMuxArgs(deduplicatedTracks, {
-      fps,
-      renderFromFrame: fromFrame,
-      renderToFrame: toFrame,
-      pageUrl: url,
-      tempDir,
-    });
+    if (options.sequenceDir) {
+      const seqDest = resolve(options.sequenceDir);
+      await mkdir(seqDest, { recursive: true });
+      await cp(tempDir, seqDest, {
+        recursive: true,
+        filter: (srcPath) => srcPath === tempDir || srcPath.endsWith(".png"),
+      });
+    }
 
-    const ffmpegArgs = [
-      "-y",
-      "-framerate",
-      String(fps),
-      "-i",
-      join(tempDir, "frame-%06d.png"),
-      ...audioPlan.inputArgs,
-      "-c:v",
-      "libx264",
-      "-pix_fmt",
-      "yuv420p",
-      ...audioPlan.filterAndMapArgs,
-      out,
-    ];
+    let audioTracksMuxed = 0;
+    if (codec === "gif") {
+      const reserveTransparent = transparent ? "1" : "0";
+      const gifFilter = `split[s0][s1];[s0]palettegen=reserve_transparent=${reserveTransparent}[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5`;
+      await runBinary(
+        "ffmpeg",
+        [
+          "-y",
+          "-framerate",
+          String(fps),
+          "-i",
+          join(tempDir, "frame-%06d.png"),
+          "-vf",
+          gifFilter,
+          out,
+        ],
+        options.quiet
+      );
+    } else {
+      const deduplicatedTracks = options.muted ? [] : Array.from(collectedAudio.values());
+      const audioPlan = await buildAudioMuxArgs(deduplicatedTracks, {
+        fps,
+        renderFromFrame: fromFrame,
+        renderToFrame: toFrame,
+        pageUrl: url,
+        tempDir,
+      });
 
-    await runBinary("ffmpeg", ffmpegArgs, options.quiet);
+      const audioCodecOverride =
+        codec === "vp9" && audioPlan.filterAndMapArgs.length > 0
+          ? audioPlan.filterAndMapArgs.map((arg) => (arg === "aac" ? "libopus" : arg))
+          : audioPlan.filterAndMapArgs;
+
+      const ffmpegArgs = [
+        "-y",
+        "-framerate",
+        String(fps),
+        "-i",
+        join(tempDir, "frame-%06d.png"),
+        ...audioPlan.inputArgs,
+        ...buildVideoCodecArgs(codec, transparent, options.crf),
+        ...audioCodecOverride,
+        out,
+      ];
+
+      await runBinary("ffmpeg", ffmpegArgs, options.quiet);
+      audioTracksMuxed =
+        audioPlan.inputArgs.length > 0 ? deduplicatedTracks.filter((t) => !t.muted).length : 0;
+    }
+
     const renderedFrames = toFrame - fromFrame;
     if (!options.quiet) {
       console.log(`Done: ${out}`);
@@ -365,6 +486,7 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
 
     return {
       out,
+      codec,
       compositionId,
       width,
       height,
@@ -372,7 +494,7 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
       fromFrame,
       toFrame,
       renderedFrames,
-      audioTracksMuxed: audioPlan.inputArgs.length > 0 ? deduplicatedTracks.filter((t) => !t.muted).length : 0,
+      audioTracksMuxed,
     };
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -380,8 +502,8 @@ export const renderMedia = async (options: RenderMediaOptions = {}): Promise<Ren
 };
 
 /**
- * Losslessly concatenates multiple rendered MP4 chunk files (e.g., from distributed cloud workers)
- * into a single MP4 using FFmpeg's `concat` demuxer.
+ * Losslessly concatenates multiple rendered video chunk files (e.g., from distributed cloud workers)
+ * into a single file using FFmpeg's `concat` demuxer.
  */
 export const stitchMediaChunks = async (
   chunkPaths: readonly string[],

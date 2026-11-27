@@ -14,12 +14,16 @@ export {
   listCompositions,
   renderStill,
   renderMedia,
+  resolveVideoCodec,
   stitchMediaChunks,
 } from "./renderer.js";
 export type {
+  VideoCodec,
   RenderMediaOptions,
   RenderMediaResult,
   RenderStillOptions,
 } from "./renderer.js";
 export { runBatchQueue, startWorkerServer } from "./worker.js";
 export type { RenderJobSpec, RenderJobRecord } from "./worker.js";
+export { scaffoldProject } from "./scaffold.js";
+export type { ScaffoldOptions } from "./scaffold.js";

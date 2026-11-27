@@ -222,6 +222,41 @@ export const LaunchCard: React.FC<{ headline?: string; tag?: string }> = ({
   );
 };
 
+export const StickerBadge: React.FC<{ label?: string }> = ({ label = "LIVE" }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const scale = spring({ frame, fps, config: { stiffness: 150, damping: 11 } });
+
+  return (
+    <div
+      style={{
+        flex: 1,
+        background: "transparent",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <div
+        style={{
+          background: "#f43f5e",
+          color: "#ffffff",
+          padding: "24px 56px",
+          borderRadius: 999,
+          fontFamily: "system-ui, sans-serif",
+          fontSize: 72,
+          fontWeight: 800,
+          letterSpacing: 4,
+          transform: `scale(${scale})`,
+          boxShadow: "0 12px 30px rgba(244, 63, 94, 0.45)",
+        }}
+      >
+        {label}
+      </div>
+    </div>
+  );
+};
+
 export const compositions = [
   defineComposition({
     id: "hello",
@@ -247,6 +282,18 @@ export const compositions = [
     defaultProps: {
       headline: "Write Films in TypeScript",
       tag: "@milyonus/core",
+    },
+  }),
+  defineComposition({
+    id: "sticker-badge",
+    component: StickerBadge,
+    width: 512,
+    height: 256,
+    fps: 30,
+    durationInFrames: 30,
+    description: "Alpha-transparent lower-third/sticker overlay for WebM, ProRes, and GIF.",
+    defaultProps: {
+      label: "LIVE",
     },
   }),
 ];

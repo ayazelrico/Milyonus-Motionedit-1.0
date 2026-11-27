@@ -19,6 +19,9 @@ export type StudioProps = {
 
 const PALETTE = ["#35C6F4", "#1E4FD8", "#FFB703", "#10B981", "#A855F7", "#F43F5E"];
 
+const CHECKERBOARD_BG =
+  "repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 24px 24px";
+
 const formatTimecode = (frame: number, fps: number): string => {
   const totalSeconds = Math.floor(frame / Math.max(1, fps));
   const remFrames = frame % Math.max(1, fps);
@@ -28,8 +31,8 @@ const formatTimecode = (frame: number, fps: number): string => {
 };
 
 /**
- * Interactive Motionedit Studio shell with composition switcher, scaled stage preview,
- * live prop editor (form + JSON), CLI command generator, and sequence/audio timeline.
+ * Interactive Motionedit Studio shell with composition switcher, zoom/transparency controls,
+ * live prop editor (form + JSON), CLI command generator, and sequence/audio timeline ruler.
  */
 export const Studio: React.FC<StudioProps> = ({
   compositions,
@@ -52,6 +55,10 @@ export const Studio: React.FC<StudioProps> = ({
   const [playing, setPlaying] = useState(false);
   const [loop, setLoop] = useState(true);
   const [muted, setMuted] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const [zoomMode, setZoomMode] = useState<"fit" | "0.5" | "0.75" | "1">("fit");
+  const [transparentStage, setTransparentStage] = useState(false);
+
   const [propsMap, setPropsMap] = useState<Record<string, Record<string, unknown>>>(() => {
     const init: Record<string, Record<string, unknown>> = {};
     for (const c of compositions) {
@@ -65,7 +72,7 @@ export const Studio: React.FC<StudioProps> = ({
   );
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [copiedCli, setCopiedCli] = useState(false);
-  const [viewportWidth, setViewportWidth] = useState(720);
+  const [fitWidth, setFitWidth] = useState(720);
 
   const stageHostRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef(frame);
@@ -95,7 +102,7 @@ export const Studio: React.FC<StudioProps> = ({
         const w = Math.max(240, Math.floor(entry.contentRect.width - 48));
         const h = Math.max(180, Math.floor(entry.contentRect.height - 48));
         const fitW = Math.min(w, Math.floor((h * activeComp.width) / activeComp.height));
-        setViewportWidth(Math.max(240, fitW));
+        setFitWidth(Math.max(240, fitW));
       }
     });
     obs.observe(stageHostRef.current);
@@ -104,10 +111,11 @@ export const Studio: React.FC<StudioProps> = ({
 
   useEffect(() => {
     if (!playing) return;
-    let origin = performance.now() - (frameRef.current / activeComp.fps) * 1000;
+    const effectiveFps = activeComp.fps * speed;
+    let origin = performance.now() - (frameRef.current / effectiveFps) * 1000;
     let raf = 0;
     const tick = (now: number) => {
-      let f = Math.floor(((now - origin) / 1000) * activeComp.fps);
+      let f = Math.floor(((now - origin) / 1000) * effectiveFps);
       if (f >= activeComp.durationInFrames) {
         if (loop) {
           origin = now;
@@ -123,14 +131,14 @@ export const Studio: React.FC<StudioProps> = ({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, loop, activeComp.fps, activeComp.durationInFrames, maxFrame]);
+  }, [playing, loop, activeComp.fps, activeComp.durationInFrames, maxFrame, speed]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.code === "Space") {
+      if (e.code === "Space" || e.code === "KeyK") {
         e.preventDefault();
         setPlaying((p) => !p);
       } else if (e.code === "ArrowLeft") {
@@ -141,6 +149,14 @@ export const Studio: React.FC<StudioProps> = ({
         e.preventDefault();
         setPlaying(false);
         setFrame((f) => Math.min(maxFrame, f + (e.shiftKey ? 10 : 1)));
+      } else if (e.code === "Home") {
+        e.preventDefault();
+        setPlaying(false);
+        setFrame(0);
+      } else if (e.code === "End") {
+        e.preventDefault();
+        setPlaying(false);
+        setFrame(maxFrame);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -197,6 +213,9 @@ export const Studio: React.FC<StudioProps> = ({
 
   const playback = useMemo(() => ({ playing, muted, renderMode: false }), [playing, muted]);
 
+  const effectiveScale =
+    zoomMode === "fit" ? fitWidth / activeComp.width : Number(zoomMode);
+
   const sequences = Array.from(seqRegistryRef.current.values()).sort(
     (a, b) => a.from - b.from || a.depth - b.depth
   );
@@ -204,16 +223,28 @@ export const Studio: React.FC<StudioProps> = ({
     (a, b) => a.startFrame - b.startFrame
   );
 
+  const rulerTicks = useMemo(() => {
+    const count = 6;
+    return Array.from({ length: count + 1 }, (_, idx) =>
+      Math.round((idx * maxFrame) / Math.max(1, count))
+    );
+  }, [maxFrame]);
+
   const buildCliCommand = (): string => {
-    const origin = typeof window !== "undefined" ? window.location.origin + window.location.pathname : "http://localhost:5173/";
+    const origin =
+      typeof window !== "undefined"
+        ? window.location.origin + window.location.pathname
+        : "http://localhost:5173/";
     const serialized = JSON.stringify(currentProps);
     const hasProps = Object.keys(currentProps).length > 0;
+    const ext = transparentStage ? "webm" : "mp4";
     return [
       "milyonus render",
       `--url "${origin}?render=1"`,
       `--composition "${activeComp.id}"`,
+      transparentStage ? "--codec vp9 --transparent" : "",
       hasProps ? `--props '${serialized}'` : "",
-      `--out "out/${activeComp.id}.mp4"`,
+      `--out "out/${activeComp.id}.${ext}"`,
     ]
       .filter(Boolean)
       .join(" ");
@@ -264,22 +295,46 @@ export const Studio: React.FC<StudioProps> = ({
             {(activeComp.durationInFrames / activeComp.fps).toFixed(2)}s)
           </span>
         </div>
-        <button
-          type="button"
-          onClick={copyCommand}
-          style={{
-            background: copiedCli ? "#10b981" : "#1e4fd8",
-            color: "#fff",
-            border: "none",
-            borderRadius: 6,
-            padding: "6px 12px",
-            fontSize: 12,
-            fontWeight: 600,
-            cursor: "pointer",
-          }}
-        >
-          {copiedCli ? "Copied CLI Command" : "Copy Render CLI Command"}
-        </button>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <label style={{ fontSize: 12, color: "#cbd5e1", display: "flex", alignItems: "center", gap: 4 }}>
+            Zoom
+            <select
+              value={zoomMode}
+              onChange={(e) => setZoomMode(e.target.value as any)}
+              style={{ ...transportBtnStyle, padding: "3px 6px" }}
+            >
+              <option value="fit">Fit ({Math.round(effectiveScale * 100)}%)</option>
+              <option value="0.5">50%</option>
+              <option value="0.75">75%</option>
+              <option value="1">100%</option>
+            </select>
+          </label>
+          <label style={{ fontSize: 12, color: "#cbd5e1", display: "flex", alignItems: "center", gap: 4 }}>
+            <input
+              type="checkbox"
+              checked={transparentStage}
+              onChange={(e) => setTransparentStage(e.target.checked)}
+            />
+            Alpha Grid
+          </label>
+          <button
+            type="button"
+            onClick={copyCommand}
+            style={{
+              background: copiedCli ? "#10b981" : "#1e4fd8",
+              color: "#fff",
+              border: "none",
+              borderRadius: 6,
+              padding: "6px 12px",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {copiedCli ? "Copied CLI Command" : "Copy Render CLI Command"}
+          </button>
+        </div>
       </header>
 
       {/* Main Workspace */}
@@ -339,19 +394,26 @@ export const Studio: React.FC<StudioProps> = ({
               alignItems: "center",
               justifyContent: "center",
               padding: 20,
-              overflow: "hidden",
+              overflow: "auto",
               background: "radial-gradient(circle at center, #111c3a 0%, #060b19 100%)",
             }}
           >
-            <div style={{ boxShadow: "0 16px 48px rgba(0,0,0,0.6)", border: "1px solid #1e293b" }}>
+            <div
+              style={{
+                boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
+                border: "1px solid #1e293b",
+                background: transparentStage ? CHECKERBOARD_BG : undefined,
+              }}
+            >
               <Stage
                 config={config}
                 frame={frame}
                 component={activeComp.component}
                 props={currentProps}
-                scale={viewportWidth / activeComp.width}
+                scale={effectiveScale}
                 playback={playback}
                 inspector={inspector}
+                transparent={transparentStage}
               />
             </div>
           </div>
@@ -430,6 +492,18 @@ export const Studio: React.FC<StudioProps> = ({
               }}
               style={{ flex: 1, accentColor: "#35C6F4" }}
             />
+            <select
+              aria-label="Playback speed"
+              value={speed}
+              onChange={(e) => setSpeed(Number(e.target.value))}
+              style={{ ...transportBtnStyle, padding: "4px 6px" }}
+            >
+              <option value={0.25}>0.25x</option>
+              <option value={0.5}>0.5x</option>
+              <option value={1}>1x</option>
+              <option value={1.5}>1.5x</option>
+              <option value={2}>2x</option>
+            </select>
             <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, color: "#cbd5e1" }}>
               <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} />
               Loop
@@ -577,7 +651,7 @@ export const Studio: React.FC<StudioProps> = ({
       {/* Bottom Timeline Panel */}
       <section
         style={{
-          height: 175,
+          height: 188,
           borderTop: "1px solid #1e293b",
           background: "#080f22",
           display: "flex",
@@ -600,10 +674,10 @@ export const Studio: React.FC<StudioProps> = ({
           <span>
             Timeline · {sequences.length} Sequences · {audioTracks.length} Audio Tracks
           </span>
-          <span>Click timeline track area to scrub</span>
+          <span>Shortcuts: Space (Play) · ←/→ (±1f) · Shift+←/→ (±10f)</span>
         </div>
 
-        <div style={{ flex: 1, overflowY: "auto", padding: "8px 16px", position: "relative" }}>
+        <div style={{ flex: 1, overflowY: "auto", padding: "6px 16px 10px", position: "relative" }}>
           <div
             onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
@@ -611,8 +685,26 @@ export const Studio: React.FC<StudioProps> = ({
               setPlaying(false);
               setFrame(Math.round(ratio * maxFrame));
             }}
-            style={{ position: "relative", minHeight: 110, cursor: "pointer" }}
+            style={{ position: "relative", minHeight: 120, cursor: "pointer" }}
           >
+            {/* Frame ruler */}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 10,
+                color: "#64748b",
+                borderBottom: "1px solid #1e293b",
+                paddingBottom: 4,
+                marginBottom: 6,
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {rulerTicks.map((t, i) => (
+                <span key={i}>{t}f</span>
+              ))}
+            </div>
+
             {/* Playhead indicator */}
             <div
               style={{
@@ -685,7 +777,7 @@ export const Studio: React.FC<StudioProps> = ({
                       style={{
                         position: "absolute",
                         left: `${leftPct}%`,
-                        width: `${Math.max(1, widthPct)}%`,
+                        width: `${Math.max(1, activeComp.durationInFrames ? widthPct : 100)}%`,
                         top: 2,
                         bottom: 2,
                         background: "#10b981",

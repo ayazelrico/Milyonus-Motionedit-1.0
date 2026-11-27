@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type {
-  CompositionDefinition,
-  CompositionSummary,
-  InspectorAPI,
-  ResolvedAudioTrack,
-  TimelineSequenceEntry,
-  VideoConfig,
+import {
+  resetDelayRenders,
+  waitForDelayRenders,
+  type CompositionDefinition,
+  type CompositionSummary,
+  type InspectorAPI,
+  type ResolvedAudioTrack,
+  type TimelineSequenceEntry,
+  type VideoConfig,
 } from "@milyonus/core";
 import { Stage } from "./Stage.js";
 
@@ -13,6 +15,7 @@ declare global {
   interface Window {
     milyonusSetFrame?: (frame: number) => Promise<void>;
     milyonusSetInputProps?: (props: Record<string, unknown>) => Promise<void>;
+    milyonusSetTransparent?: (transparent: boolean) => Promise<void>;
     milyonusGetConfig?: () => CompositionSummary;
     milyonusListCompositions?: () => CompositionSummary[];
     milyonusSelectComposition?: (id: string) => Promise<CompositionSummary>;
@@ -26,6 +29,7 @@ export type SingleFrameRendererProps = VideoConfig & {
   id?: string;
   component: React.ComponentType<any>;
   inputProps?: Record<string, unknown>;
+  transparent?: boolean;
   compositions?: undefined;
   initialCompositionId?: undefined;
 };
@@ -34,6 +38,7 @@ export type MultiFrameRendererProps = {
   compositions: readonly CompositionDefinition<any>[];
   initialCompositionId?: string;
   inputProps?: Record<string, unknown>;
+  transparent?: boolean;
 };
 
 export type FrameRendererProps = SingleFrameRendererProps | MultiFrameRendererProps;
@@ -51,7 +56,8 @@ const nextPaintTick = (): Promise<void> =>
     setTimeout(done, 20);
   });
 
-const waitTwoAnimationFrames = async (): Promise<void> => {
+const waitCommitAndAssets = async (): Promise<void> => {
+  await nextPaintTick();
   if (typeof document !== "undefined" && "fonts" in document && document.fonts?.ready) {
     try {
       await document.fonts.ready;
@@ -59,20 +65,25 @@ const waitTwoAnimationFrames = async (): Promise<void> => {
       // Ignore font readiness errors.
     }
   }
-  await nextPaintTick();
+  await waitForDelayRenders();
   await nextPaintTick();
 };
 
 const readInitialQueryOverrides = (): {
   compositionId?: string;
   frame?: number;
+  transparent?: boolean;
   props?: Record<string, unknown>;
 } => {
   if (typeof window === "undefined") return {};
   const params = new URLSearchParams(window.location.search);
   const compositionId = params.get("composition") ?? undefined;
   const rawFrame = params.get("frame");
-  const frame = rawFrame !== null && !Number.isNaN(Number(rawFrame)) ? Math.max(0, Math.floor(Number(rawFrame))) : undefined;
+  const frame =
+    rawFrame !== null && !Number.isNaN(Number(rawFrame))
+      ? Math.max(0, Math.floor(Number(rawFrame)))
+      : undefined;
+  const transparent = params.has("transparent") ? params.get("transparent") !== "0" : undefined;
   let props: Record<string, unknown> | undefined;
   const rawProps = params.get("props");
   if (rawProps) {
@@ -85,7 +96,7 @@ const readInitialQueryOverrides = (): {
       // Ignore malformed query JSON; CLI uses milyonusSetInputProps directly.
     }
   }
-  return { compositionId, frame, props };
+  return { compositionId, frame, transparent, props };
 };
 
 const toSummary = (comp: CompositionDefinition<any>): CompositionSummary => ({
@@ -100,7 +111,8 @@ const toSummary = (comp: CompositionDefinition<any>): CompositionSummary => ({
 
 /**
  * Render-mode driver page. Exposes `window.milyonusSetFrame(n)`, `window.milyonusSetInputProps`,
- * composition discovery, and audio/sequence inspection while mounting `#milyonus-stage` at 1:1 scale.
+ * `delayRender` asset synchronization, alpha transparency control, composition discovery,
+ * and audio/sequence inspection while mounting `#milyonus-stage` at 1:1 scale.
  */
 export const FrameRenderer: React.FC<FrameRendererProps> = (props) => {
   const queryInit = useMemo(readInitialQueryOverrides, []);
@@ -137,7 +149,12 @@ export const FrameRenderer: React.FC<FrameRendererProps> = (props) => {
   });
 
   const [frame, setFrame] = useState<number>(() => queryInit.frame ?? 0);
-  const [overrideProps, setOverrideProps] = useState<Record<string, unknown> | undefined>(() => queryInit.props);
+  const [transparent, setTransparent] = useState<boolean>(
+    () => queryInit.transparent ?? props.transparent ?? false
+  );
+  const [overrideProps, setOverrideProps] = useState<Record<string, unknown> | undefined>(
+    () => queryInit.props
+  );
 
   const audioMapRef = useRef<Map<string, ResolvedAudioTrack>>(new Map());
   const seqMapRef = useRef<Map<string, TimelineSequenceEntry>>(new Map());
@@ -171,18 +188,24 @@ export const FrameRenderer: React.FC<FrameRendererProps> = (props) => {
       document.body.style.margin = "0";
       document.body.style.padding = "0";
       document.body.style.overflow = "hidden";
+      document.body.style.background = "transparent";
     }
 
     window.milyonusSetFrame = (n: number) => {
       setFrame(n);
-      return waitTwoAnimationFrames();
+      return waitCommitAndAssets();
     };
 
     window.milyonusSetInputProps = (nextProps: Record<string, unknown>) => {
       audioMapRef.current.clear();
       seqMapRef.current.clear();
       setOverrideProps(nextProps);
-      return waitTwoAnimationFrames();
+      return waitCommitAndAssets();
+    };
+
+    window.milyonusSetTransparent = (value: boolean) => {
+      setTransparent(value);
+      return waitCommitAndAssets();
     };
 
     window.milyonusGetConfig = () => toSummary(activeCompRef.current);
@@ -195,11 +218,12 @@ export const FrameRenderer: React.FC<FrameRendererProps> = (props) => {
         const available = compositionsRef.current.map((c) => c.id).join(", ");
         throw new Error(`Composition "${id}" not found. Available: ${available}`);
       }
+      resetDelayRenders();
       audioMapRef.current.clear();
       seqMapRef.current.clear();
       setSelectedId(target.id);
       setFrame(0);
-      await waitTwoAnimationFrames();
+      await waitCommitAndAssets();
       return toSummary(target);
     };
 
@@ -209,6 +233,7 @@ export const FrameRenderer: React.FC<FrameRendererProps> = (props) => {
 
     return () => {
       window.milyonusReady = false;
+      resetDelayRenders();
     };
   }, []);
 
@@ -243,6 +268,7 @@ export const FrameRenderer: React.FC<FrameRendererProps> = (props) => {
         scale={1}
         playback={renderPlayback}
         inspector={inspector}
+        transparent={transparent}
       />
     </div>
   );
